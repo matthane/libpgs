@@ -12,6 +12,7 @@ const FIXTURES: &[&str] = &[
     "tests/fixtures/matroska-with-cues.mkv",
     "tests/fixtures/matroska-no-cues.mkv",
     "tests/fixtures/mpeg-transport-stream.m2ts",
+    "tests/fixtures/mpeg-transport-stream-descriptors.m2ts",
 ];
 
 /// Returns only the fixture paths that exist on disk.
