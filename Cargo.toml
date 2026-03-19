@@ -1,0 +1,19 @@
+[package]
+name = "libpgs"
+version = "0.1.0"
+edition = "2024"
+description = "Fast PGS subtitle extraction from MKV and M2TS containers"
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "libpgs"
+path = "src/lib.rs"
+
+[[bin]]
+name = "libpgs"
+path = "src/cli/main.rs"
+
+[dependencies]
+flate2 = "1"
+
+[dev-dependencies]
