@@ -173,7 +173,7 @@ impl Extractor {
                 let mut reader = SeekBufReader::with_capacity(M2TS_BUF_SIZE, file);
                 detect_format(&mut reader)?;
 
-                let meta = m2ts::prepare_m2ts_metadata(&mut reader)?;
+                let meta = m2ts::prepare_m2ts_metadata(&mut reader, Some(path))?;
                 let tracks: Vec<PgsTrackInfo> = meta.tracks.iter()
                     .map(|t| PgsTrackInfo {
                         track_id: t.pid as u32,
@@ -271,7 +271,7 @@ impl Extractor {
                 let mut reader = SeekBufReader::with_capacity(M2TS_BUF_SIZE, file);
                 detect_format(&mut reader)?;
 
-                let meta = m2ts::prepare_m2ts_metadata(&mut reader)?;
+                let meta = m2ts::prepare_m2ts_metadata(&mut reader, Some(path))?;
                 let tracks: Vec<PgsTrackInfo> = meta.tracks.iter()
                     .filter(|t| track_ids.contains(&(t.pid as u32)))
                     .map(|t| PgsTrackInfo {
@@ -451,7 +451,7 @@ pub fn list_pgs_tracks(path: &Path) -> Result<Vec<PgsTrackInfo>, PgsError> {
                 .collect())
         }
         ContainerFormat::M2ts | ContainerFormat::TransportStream => {
-            let tracks = m2ts::list_pgs_tracks_m2ts(&mut reader)?;
+            let tracks = m2ts::list_pgs_tracks_m2ts(&mut reader, Some(path))?;
             Ok(tracks
                 .into_iter()
                 .map(|t| PgsTrackInfo {

@@ -4,10 +4,12 @@ pub mod pmt;
 pub mod pes;
 pub mod probe;
 pub mod stream;
+pub(crate) mod clpi;
 
 use crate::error::PgsError;
 use crate::io::SeekBufReader;
 use std::io::{Read, Seek};
+use std::path::Path;
 use ts_packet::PacketFormat;
 
 /// A PGS track found in an M2TS/TS file.
@@ -30,6 +32,7 @@ pub(crate) struct M2tsMetadata {
 /// Discovers packet format, PGS tracks via PAT/PMT, and file size.
 pub(crate) fn prepare_m2ts_metadata<R: Read + Seek>(
     reader: &mut SeekBufReader<R>,
+    m2ts_path: Option<&Path>,
 ) -> Result<M2tsMetadata, PgsError> {
     let format = ts_packet::detect_packet_format(reader)?;
     let tracks = discover_pgs_tracks(reader, format)?;
@@ -37,6 +40,9 @@ pub(crate) fn prepare_m2ts_metadata<R: Read + Seek>(
     if tracks.is_empty() {
         return Err(PgsError::NoPgsTracks);
     }
+
+    // Apply CLPI language fallback for tracks missing PMT language descriptors.
+    let tracks = apply_clpi_fallback(tracks, m2ts_path);
 
     let pgs_pids: Vec<u16> = tracks.iter().map(|t| t.pid).collect();
     let file_size = reader.file_size()?;
@@ -52,9 +58,35 @@ pub(crate) fn prepare_m2ts_metadata<R: Read + Seek>(
 /// List all PGS tracks in an M2TS/TS file.
 pub fn list_pgs_tracks_m2ts<R: Read + Seek>(
     reader: &mut SeekBufReader<R>,
+    m2ts_path: Option<&Path>,
 ) -> Result<Vec<M2tsPgsTrack>, PgsError> {
     let format = ts_packet::detect_packet_format(reader)?;
-    discover_pgs_tracks(reader, format)
+    let tracks = discover_pgs_tracks(reader, format)?;
+    Ok(apply_clpi_fallback(tracks, m2ts_path))
+}
+
+/// Apply CLPI language fallback for tracks missing language from PMT.
+fn apply_clpi_fallback(tracks: Vec<M2tsPgsTrack>, m2ts_path: Option<&Path>) -> Vec<M2tsPgsTrack> {
+    let Some(path) = m2ts_path else {
+        return tracks;
+    };
+
+    let clpi_map = clpi::clpi_language_map(path);
+    if clpi_map.is_empty() {
+        return tracks;
+    }
+
+    tracks
+        .into_iter()
+        .map(|mut t| {
+            if t.language.is_none() {
+                if let Some(lang) = clpi_map.get(&t.pid) {
+                    t.language = Some(lang.clone());
+                }
+            }
+            t
+        })
+        .collect()
 }
 
 /// Discover PGS tracks via PAT -> PMT.
