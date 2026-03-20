@@ -8,7 +8,7 @@ libpgs is a Rust library + CLI for extracting PGS (Presentation Graphic Stream) 
 
 ```bash
 cargo build          # Build library + CLI
-cargo test           # Run all 45 unit tests
+cargo test           # Run all unit + integration tests
 cargo check          # Type-check without building
 cargo run -- <args>  # Run the CLI
 ```
@@ -48,9 +48,10 @@ src/
 │   ├── pmt.rs          # PMT parsing (stream discovery)
 │   ├── pes.rs          # PES reassembly state machine
 │   ├── probe.rs        # Sparse probing engine
+│   ├── clpi.rs         # BDMV CLPI parser for PID → language fallback
 │   └── stream.rs       # M2tsExtractorState — streaming state machine
 └── cli/
-    └── main.rs         # CLI binary: tracks, extract, bench subcommands
+    └── main.rs         # CLI binary: tracks, extract, stream, bench subcommands
 ```
 
 ### Core design
@@ -69,6 +70,8 @@ src/
 **MKV parallel optimization:** For batch collection (`collect_by_track()`), if Cues are available and extraction hasn't started, uses scoped threads (1–8 workers) with independent file handles to pipeline NAS latency.
 
 **M2TS bulk PID scanning:** Reads 2MB blocks, checks PID bytes directly in buffer (~0.025% of packets need full header parsing). 2MB I/O buffer for NAS throughput.
+
+**M2TS BDMV language fallback:** When an M2TS file is inside a `BDMV/STREAM/` directory, the library reads the corresponding `.clpi` file from `BDMV/CLIPINF/` to get PID → language mappings. These are applied as a fallback only — PMT-provided language descriptors always take priority. Fail-silent if the CLPI is missing or unparseable.
 
 ### Key types
 
@@ -108,8 +111,25 @@ src/
 ```
 libpgs tracks <file>                       # List PGS tracks
 libpgs extract <file> -o <out> [-t <id>]   # Extract to .sup
+libpgs stream <file> [-t <id>]             # Stream NDJSON to stdout
 libpgs bench <file>                        # Benchmark I/O efficiency
 ```
+
+### Stream command (NDJSON protocol)
+
+The `stream` command exposes the `Extractor` streaming API over stdout as newline-delimited JSON, enabling any language to consume PGS data incrementally via a subprocess pipe — no temp files or waiting for full extraction.
+
+**Line 1 — track discovery:**
+```json
+{"type":"tracks","tracks":[{"track_id":3,"language":"eng","container":"Matroska"}]}
+```
+
+**Subsequent lines — one per display set, flushed immediately when yielded:**
+```json
+{"type":"display_set","track_id":3,"language":"eng","container":"Matroska","pts":311580,"pts_ms":3462.0000,"composition_state":"EpochStart","segments":[{"type":"PresentationComposition","pts":311580,"dts":0,"size":19,"payload":"<base64>"},{"type":"EndOfDisplaySet","pts":311580,"dts":0,"size":0,"payload":""}]}
+```
+
+Fields per display set: `track_id`, `language` (nullable), `container`, `pts` (90 kHz ticks), `pts_ms`, `composition_state` (Normal/AcquisitionPoint/EpochStart). Each segment includes `type`, `pts`, `dts`, `size`, and base64-encoded `payload`.
 
 ## Code conventions
 

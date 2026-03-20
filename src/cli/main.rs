@@ -1,3 +1,4 @@
+use std::io::Write;
 use std::path::PathBuf;
 use std::process;
 use std::time::Instant;
@@ -13,6 +14,7 @@ fn main() {
     let result = match args[1].as_str() {
         "tracks" => cmd_tracks(&args[2..]),
         "extract" => cmd_extract(&args[2..]),
+        "stream" => cmd_stream(&args[2..]),
         "bench" => cmd_bench(&args[2..]),
         "help" | "--help" | "-h" => {
             print_usage();
@@ -37,6 +39,7 @@ fn print_usage() {
     eprintln!("  libpgs tracks <file>                      List PGS tracks");
     eprintln!("  libpgs extract <file> -o <output.sup>     Extract all PGS tracks");
     eprintln!("  libpgs extract <file> -t <id> -o <out>    Extract specific track");
+    eprintln!("  libpgs stream <file> [-t <id>]             Stream PGS segments to stdout");
     eprintln!("  libpgs bench <file>                       Benchmark I/O efficiency");
     eprintln!("  libpgs help                               Show this help");
     eprintln!();
@@ -121,6 +124,163 @@ fn cmd_bench(args: &[String]) -> Result<(), libpgs::error::PgsError> {
     println!("Time:          {:.3}s", elapsed.as_secs_f64());
 
     Ok(())
+}
+
+fn cmd_stream(args: &[String]) -> Result<(), libpgs::error::PgsError> {
+    if args.is_empty() {
+        eprintln!("Usage: libpgs stream <file> [-t <track_id>]");
+        process::exit(1);
+    }
+
+    let input = PathBuf::from(&args[0]);
+    let mut track_id: Option<u32> = None;
+
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "-t" | "--track" => {
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("Missing value for -t");
+                    process::exit(1);
+                }
+                track_id = Some(args[i].parse().unwrap_or_else(|_| {
+                    eprintln!("Invalid track ID: {}", args[i]);
+                    process::exit(1);
+                }));
+            }
+            other => {
+                eprintln!("Unknown option: {other}");
+                process::exit(1);
+            }
+        }
+        i += 1;
+    }
+
+    let mut extractor = libpgs::Extractor::open(&input)?;
+    if let Some(tid) = track_id {
+        extractor = extractor.with_track_filter(&[tid]);
+    }
+
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+
+    // Emit tracks header as first NDJSON line.
+    let tracks = extractor.tracks();
+    write!(out, "{{\"type\":\"tracks\",\"tracks\":[")?;
+    for (ti, track) in tracks.iter().enumerate() {
+        if ti > 0 {
+            write!(out, ",")?;
+        }
+        write!(
+            out,
+            "{{\"track_id\":{},\"language\":{},\"container\":\"{}\"}}",
+            track.track_id,
+            json_string_or_null(track.language.as_deref()),
+            container_name(track.container),
+        )?;
+    }
+    writeln!(out, "]}}")?;
+    out.flush()?;
+
+    // Stream display sets as NDJSON, one line per display set.
+    for result in &mut extractor {
+        let tds = result?;
+        let ds = &tds.display_set;
+
+        write!(
+            out,
+            "{{\"type\":\"display_set\",\"track_id\":{},\"language\":{},\"container\":\"{}\",\
+             \"pts\":{},\"pts_ms\":{:.4},\"composition_state\":\"{}\",\"segments\":[",
+            tds.track_id,
+            json_string_or_null(tds.language.as_deref()),
+            container_name(tds.container),
+            ds.pts,
+            ds.pts_ms,
+            composition_state_name(ds.composition_state),
+        )?;
+
+        for (si, seg) in ds.segments.iter().enumerate() {
+            if si > 0 {
+                write!(out, ",")?;
+            }
+            write!(
+                out,
+                "{{\"type\":\"{}\",\"pts\":{},\"dts\":{},\"size\":{},\"payload\":\"{}\"}}",
+                segment_type_name(seg.segment_type),
+                seg.pts,
+                seg.dts,
+                seg.payload.len(),
+                base64_encode(&seg.payload),
+            )?;
+        }
+
+        writeln!(out, "]}}")?;
+        out.flush()?;
+    }
+
+    Ok(())
+}
+
+fn json_string_or_null(s: Option<&str>) -> String {
+    match s {
+        Some(v) => format!("\"{}\"", v),
+        None => "null".to_string(),
+    }
+}
+
+fn container_name(c: libpgs::ContainerFormat) -> &'static str {
+    match c {
+        libpgs::ContainerFormat::Matroska => "Matroska",
+        libpgs::ContainerFormat::M2ts => "M2TS",
+        libpgs::ContainerFormat::TransportStream => "TransportStream",
+    }
+}
+
+fn composition_state_name(cs: libpgs::pgs::segment::CompositionState) -> &'static str {
+    match cs {
+        libpgs::pgs::segment::CompositionState::Normal => "Normal",
+        libpgs::pgs::segment::CompositionState::AcquisitionPoint => "AcquisitionPoint",
+        libpgs::pgs::segment::CompositionState::EpochStart => "EpochStart",
+    }
+}
+
+fn segment_type_name(st: libpgs::pgs::segment::SegmentType) -> &'static str {
+    match st {
+        libpgs::pgs::segment::SegmentType::PresentationComposition => "PresentationComposition",
+        libpgs::pgs::segment::SegmentType::WindowDefinition => "WindowDefinition",
+        libpgs::pgs::segment::SegmentType::PaletteDefinition => "PaletteDefinition",
+        libpgs::pgs::segment::SegmentType::ObjectDefinition => "ObjectDefinition",
+        libpgs::pgs::segment::SegmentType::EndOfDisplaySet => "EndOfDisplaySet",
+    }
+}
+
+const BASE64_CHARS: &[u8; 64] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+fn base64_encode(data: &[u8]) -> String {
+    let mut encoded = String::with_capacity((data.len() + 2) / 3 * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
+        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
+        let triple = (b0 << 16) | (b1 << 8) | b2;
+
+        encoded.push(BASE64_CHARS[((triple >> 18) & 0x3F) as usize] as char);
+        encoded.push(BASE64_CHARS[((triple >> 12) & 0x3F) as usize] as char);
+
+        if chunk.len() > 1 {
+            encoded.push(BASE64_CHARS[((triple >> 6) & 0x3F) as usize] as char);
+        } else {
+            encoded.push('=');
+        }
+        if chunk.len() > 2 {
+            encoded.push(BASE64_CHARS[(triple & 0x3F) as usize] as char);
+        } else {
+            encoded.push('=');
+        }
+    }
+    encoded
 }
 
 fn cmd_extract(args: &[String]) -> Result<(), libpgs::error::PgsError> {
