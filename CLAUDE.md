@@ -47,7 +47,6 @@ src/
 │   ├── pat.rs          # PAT parsing (program association)
 │   ├── pmt.rs          # PMT parsing (stream discovery)
 │   ├── pes.rs          # PES reassembly state machine
-│   ├── probe.rs        # Sparse probing engine
 │   ├── clpi.rs         # BDMV CLPI parser for PID → language fallback
 │   └── stream.rs       # M2tsExtractorState — streaming state machine
 └── cli/

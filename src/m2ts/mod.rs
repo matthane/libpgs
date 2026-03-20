@@ -2,7 +2,6 @@ pub mod ts_packet;
 pub mod pat;
 pub mod pmt;
 pub mod pes;
-pub mod probe;
 pub mod stream;
 pub(crate) mod clpi;
 
