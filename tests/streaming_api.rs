@@ -13,6 +13,7 @@ const FIXTURES: &[&str] = &[
     "tests/fixtures/matroska-no-cues.mkv",
     "tests/fixtures/mpeg-transport-stream.m2ts",
     "tests/fixtures/mpeg-transport-stream-descriptors.m2ts",
+    "tests/fixtures/raw-pgs.sup",
 ];
 
 /// Returns only the fixture paths that exist on disk.
@@ -375,4 +376,59 @@ fn all_fixtures_produce_same_totals() {
             "{fixture} per-track display set distribution differs from {ref_fixture}"
         );
     }
+}
+
+/// Roundtrip test: extract MKV → .sup via write_sup_file, then re-read via Extractor.
+#[test]
+fn sup_roundtrip_from_mkv() {
+    let mkv = "tests/fixtures/matroska-with-cues.mkv";
+    if !Path::new(mkv).exists() { return; }
+
+    let batch = batch_baseline(mkv);
+    assert!(!batch.is_empty(), "should have at least one track");
+
+    // Write first track to a temp .sup file.
+    let sup_path = std::env::temp_dir().join("libpgs_test_roundtrip.sup");
+    let source = &batch[0];
+    libpgs::write_sup_file(&source.display_sets, &sup_path).expect("write_sup_file");
+
+    // Re-read via Extractor.
+    let extractor = libpgs::Extractor::open(&sup_path).expect("open .sup");
+    assert_eq!(extractor.tracks().len(), 1);
+    assert_eq!(extractor.tracks()[0].track_id, 0);
+    assert_eq!(extractor.tracks()[0].container, libpgs::ContainerFormat::Sup);
+
+    let mut ds_count = 0usize;
+    let mut seg_count = 0usize;
+    for result in extractor {
+        let tds = result.expect("streaming item should be Ok");
+        assert_eq!(tds.track_id, 0);
+        ds_count += 1;
+        seg_count += tds.display_set.segments.len();
+    }
+
+    assert_eq!(
+        ds_count,
+        source.display_sets.len(),
+        "roundtrip display set count mismatch"
+    );
+
+    let source_segs: usize = source.display_sets.iter().map(|ds| ds.segments.len()).sum();
+    assert_eq!(seg_count, source_segs, "roundtrip segment count mismatch");
+
+    // Verify PTS values match.
+    let extractor2 = libpgs::Extractor::open(&sup_path).expect("reopen .sup");
+    for (i, (result, orig_ds)) in extractor2.zip(source.display_sets.iter()).enumerate() {
+        let tds = result.expect("Ok");
+        assert_eq!(
+            tds.display_set.pts, orig_ds.pts,
+            "roundtrip PTS mismatch at display set {i}"
+        );
+        assert_eq!(
+            tds.display_set.segments.len(), orig_ds.segments.len(),
+            "roundtrip segment count mismatch at display set {i}"
+        );
+    }
+
+    let _ = std::fs::remove_file(&sup_path);
 }
