@@ -3,12 +3,14 @@ pub mod pgs;
 pub mod ebml;
 pub mod mkv;
 pub mod m2ts;
+pub mod sup;
 pub mod io;
 
 use error::PgsError;
 use io::SeekBufReader;
 use mkv::stream::MkvExtractorState;
 use m2ts::stream::M2tsExtractorState;
+use sup::stream::SupExtractorState;
 use pgs::DisplaySet;
 use std::collections::HashMap;
 use std::fs::File;
@@ -21,6 +23,7 @@ pub enum ContainerFormat {
     Matroska,
     M2ts,
     TransportStream,
+    Sup,
 }
 
 /// Metadata about a PGS track found in the container.
@@ -77,6 +80,7 @@ pub struct TrackDisplaySet {
 enum ExtractorInner {
     Mkv(MkvExtractorState),
     M2ts(M2tsExtractorState),
+    Sup(SupExtractorState),
     Done,
 }
 
@@ -193,6 +197,19 @@ impl Extractor {
                     format,
                 })
             }
+            ContainerFormat::Sup => {
+                let tracks = vec![sup_track_info()];
+                let state = SupExtractorState::new(reader);
+
+                Ok(Extractor {
+                    inner: ExtractorInner::Sup(state),
+                    catalog: Vec::new(),
+                    tracks,
+                    stats: ExtractionStats { file_size, bytes_read: 0 },
+                    path: path.to_path_buf(),
+                    format: ContainerFormat::Sup,
+                })
+            }
         }
     }
 
@@ -284,6 +301,34 @@ impl Extractor {
                     format: fmt,
                 })
             }
+            ContainerFormat::Sup => {
+                if !track_ids.contains(&0) {
+                    return Ok(Extractor {
+                        inner: ExtractorInner::Done,
+                        catalog: Vec::new(),
+                        tracks: Vec::new(),
+                        stats: ExtractionStats { file_size, bytes_read: 0 },
+                        path: path.to_path_buf(),
+                        format: ContainerFormat::Sup,
+                    });
+                }
+
+                let file = File::open(path)?;
+                let mut reader = SeekBufReader::new(file);
+                detect_format(&mut reader)?;
+
+                let tracks = vec![sup_track_info()];
+                let state = SupExtractorState::new(reader);
+
+                Ok(Extractor {
+                    inner: ExtractorInner::Sup(state),
+                    catalog: Vec::new(),
+                    tracks,
+                    stats: ExtractionStats { file_size, bytes_read: 0 },
+                    path: path.to_path_buf(),
+                    format: ContainerFormat::Sup,
+                })
+            }
         }
     }
 
@@ -367,6 +412,7 @@ impl Extractor {
         self.stats.bytes_read = match &self.inner {
             ExtractorInner::Mkv(state) => state.bytes_read(),
             ExtractorInner::M2ts(state) => state.bytes_read(),
+            ExtractorInner::Sup(state) => state.bytes_read(),
             ExtractorInner::Done => self.stats.bytes_read,
         };
     }
@@ -379,6 +425,7 @@ impl Iterator for Extractor {
         let result = match &mut self.inner {
             ExtractorInner::Mkv(state) => state.next_display_set(),
             ExtractorInner::M2ts(state) => state.next_display_set(),
+            ExtractorInner::Sup(state) => state.next_display_set(),
             ExtractorInner::Done => return None,
         };
 
@@ -422,6 +469,11 @@ fn detect_format(reader: &mut SeekBufReader<File>) -> Result<ContainerFormat, Pg
         }
     }
 
+    // SUP: raw PGS segments starting with "PG" magic (0x50, 0x47).
+    if magic[0] == 0x50 && magic[1] == 0x47 {
+        return Ok(ContainerFormat::Sup);
+    }
+
     Err(PgsError::UnknownFormat)
 }
 
@@ -435,6 +487,19 @@ fn mkv_track_to_info(t: &mkv::tracks::MkvPgsTrack, frame_counts: &HashMap<u64, u
         flag_default: t.flag_default,
         flag_forced: t.flag_forced,
         display_set_count: t.track_uid.and_then(|uid| frame_counts.get(&uid).copied()),
+    }
+}
+
+/// Build synthetic track info for a .sup file (always a single track).
+fn sup_track_info() -> PgsTrackInfo {
+    PgsTrackInfo {
+        track_id: 0,
+        language: None,
+        container: ContainerFormat::Sup,
+        name: None,
+        flag_default: None,
+        flag_forced: None,
+        display_set_count: None,
     }
 }
 
@@ -471,6 +536,9 @@ pub fn list_pgs_tracks(path: &Path) -> Result<Vec<PgsTrackInfo>, PgsError> {
                 .iter()
                 .map(|t| m2ts_track_to_info(t, format))
                 .collect())
+        }
+        ContainerFormat::Sup => {
+            Ok(vec![sup_track_info()])
         }
     }
 }

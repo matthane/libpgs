@@ -290,6 +290,7 @@ fn container_name(c: libpgs::ContainerFormat) -> &'static str {
         libpgs::ContainerFormat::Matroska => "Matroska",
         libpgs::ContainerFormat::M2ts => "M2TS",
         libpgs::ContainerFormat::TransportStream => "TransportStream",
+        libpgs::ContainerFormat::Sup => "SUP",
     }
 }
 
