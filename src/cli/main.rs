@@ -228,7 +228,7 @@ fn stream_ndjson(
             )?;
         }
 
-        writeln!(out, "}}")?;
+        writeln!(out, "]}}")?;
         out.flush()?;
     }
 
