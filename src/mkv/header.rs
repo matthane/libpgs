@@ -14,6 +14,8 @@ pub struct SegmentLayout {
     pub cues_position: Option<u64>,
     /// Absolute byte position of the Info element, if found.
     pub info_position: Option<u64>,
+    /// Absolute byte position of the Tags element, if found.
+    pub tags_position: Option<u64>,
     /// Absolute byte position of the first Cluster, if found.
     pub first_cluster_position: Option<u64>,
     /// Absolute byte position of the end of the Segment's data.
@@ -121,6 +123,12 @@ pub fn parse_segment<R: Read + Seek>(reader: &mut SeekBufReader<R>) -> Result<Se
                 }
                 reader.skip(child_size.value)?;
             }
+            ids::TAGS => {
+                if layout.tags_position.is_none() {
+                    layout.tags_position = Some(elem_pos);
+                }
+                reader.skip(child_size.value)?;
+            }
             ids::CLUSTER => {
                 if layout.first_cluster_position.is_none() {
                     layout.first_cluster_position = Some(elem_pos);
@@ -221,7 +229,12 @@ fn parse_seek_entry<R: Read + Seek>(
                     layout.first_cluster_position = Some(abs_pos);
                 }
             }
-            _ => {} // We don't need Chapters, Attachments, Tags positions.
+            ids::TAGS => {
+                if layout.tags_position.is_none() {
+                    layout.tags_position = Some(abs_pos);
+                }
+            }
+            _ => {} // We don't need Chapters or Attachments positions.
         }
     }
 

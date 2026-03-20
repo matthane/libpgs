@@ -4,6 +4,7 @@ pub mod cues;
 pub mod cluster;
 pub mod block;
 pub mod stream;
+pub mod tags;
 
 use crate::error::PgsError;
 use crate::io::SeekBufReader;
@@ -29,6 +30,8 @@ pub(crate) struct MkvMetadata {
     pub compression_map: HashMap<u64, ContentCompAlgo>,
     pub timestamp_scale: u64,
     pub cue_points: Option<Vec<cues::PgsCuePoint>>,
+    /// TrackUID → NUMBER_OF_FRAMES from Tags element.
+    pub frame_counts: HashMap<u64, u64>,
 }
 
 /// Parse all MKV metadata needed for PGS extraction in a single pass.
@@ -76,6 +79,20 @@ pub(crate) fn prepare_mkv_metadata<R: Read + Seek>(
         None
     };
 
+    let frame_counts = if let Some(tags_pos) = layout.tags_position {
+        let target_uids: Vec<u64> = pgs_tracks.iter()
+            .filter_map(|t| t.track_uid)
+            .collect();
+        if target_uids.is_empty() {
+            HashMap::new()
+        } else {
+            tags::parse_tags_frame_counts(reader, tags_pos, &target_uids)
+                .unwrap_or_default()
+        }
+    } else {
+        HashMap::new()
+    };
+
     Ok(MkvMetadata {
         layout,
         pgs_tracks,
@@ -83,6 +100,7 @@ pub(crate) fn prepare_mkv_metadata<R: Read + Seek>(
         compression_map,
         timestamp_scale,
         cue_points,
+        frame_counts,
     })
 }
 

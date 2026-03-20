@@ -41,6 +41,9 @@ pub mod ids {
     pub const TRACK_NUMBER: u64 = 0xD7;
     pub const TRACK_UID: u64 = 0x73C5;
     pub const TRACK_TYPE: u64 = 0x83;
+    pub const FLAG_DEFAULT: u64 = 0x88;
+    pub const FLAG_FORCED: u64 = 0x55AA;
+    pub const TRACK_NAME: u64 = 0x536E;
     pub const CODEC_ID: u64 = 0x86;
     pub const LANGUAGE: u64 = 0x22B59C;
     pub const LANGUAGE_BCP47: u64 = 0x22B59D;
@@ -68,4 +71,12 @@ pub mod ids {
     pub const CUE_TRACK: u64 = 0xF7;
     pub const CUE_CLUSTER_POSITION: u64 = 0xF1;
     pub const CUE_RELATIVE_POSITION: u64 = 0xF0;
+
+    // Tags children
+    pub const TAG: u64 = 0x7373;
+    pub const TARGETS: u64 = 0x63C0;
+    pub const TAG_TRACK_UID: u64 = 0x63C5;
+    pub const SIMPLE_TAG: u64 = 0x67C8;
+    pub const TAG_NAME: u64 = 0x4587;
+    pub const TAG_STRING: u64 = 0x4487;
 }

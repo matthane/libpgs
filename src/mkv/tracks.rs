@@ -23,8 +23,16 @@ pub enum ContentCompAlgo {
 pub struct MkvPgsTrack {
     /// Track number used in Block/SimpleBlock headers.
     pub track_number: u64,
+    /// TrackUID for Tags matching.
+    pub track_uid: Option<u64>,
     /// Language code (ISO 639-2 or BCP 47), if present.
     pub language: Option<String>,
+    /// Track name / title, if present.
+    pub name: Option<String>,
+    /// FlagDefault — whether this track should be active by default.
+    pub flag_default: Option<bool>,
+    /// FlagForced — whether this track contains forced subtitles.
+    pub flag_forced: Option<bool>,
     /// Content compression, if the track uses ContentEncodings.
     pub compression: Option<ContentCompAlgo>,
 }
@@ -69,9 +77,13 @@ fn parse_track_entry<R: Read + Seek>(
     let end = data_start + data_size;
 
     let mut track_number: Option<u64> = None;
+    let mut track_uid: Option<u64> = None;
     let mut track_type: Option<u64> = None;
     let mut codec_id: Option<String> = None;
     let mut language: Option<String> = None;
+    let mut name: Option<String> = None;
+    let mut flag_default: Option<bool> = None;
+    let mut flag_forced: Option<bool> = None;
     let mut compression: Option<ContentCompAlgo> = None;
 
     while reader.position() < end {
@@ -82,11 +94,23 @@ fn parse_track_entry<R: Read + Seek>(
             ids::TRACK_NUMBER => {
                 track_number = Some(reader.read_uint_be(child_size.value as usize)?);
             }
+            ids::TRACK_UID => {
+                track_uid = Some(reader.read_uint_be(child_size.value as usize)?);
+            }
             ids::TRACK_TYPE => {
                 track_type = Some(reader.read_uint_be(child_size.value as usize)?);
             }
             ids::CODEC_ID => {
                 codec_id = Some(reader.read_string(child_size.value as usize)?);
+            }
+            ids::TRACK_NAME => {
+                name = Some(reader.read_string(child_size.value as usize)?);
+            }
+            ids::FLAG_DEFAULT => {
+                flag_default = Some(reader.read_uint_be(child_size.value as usize)? == 1);
+            }
+            ids::FLAG_FORCED => {
+                flag_forced = Some(reader.read_uint_be(child_size.value as usize)? == 1);
             }
             ids::LANGUAGE => {
                 language = Some(reader.read_string(child_size.value as usize)?);
@@ -119,7 +143,11 @@ fn parse_track_entry<R: Read + Seek>(
 
         Ok(Some(MkvPgsTrack {
             track_number,
+            track_uid,
             language,
+            name,
+            flag_default,
+            flag_forced,
             compression,
         }))
     } else {
