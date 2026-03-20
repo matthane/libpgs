@@ -39,7 +39,7 @@ fn print_usage() {
     eprintln!("  libpgs tracks <file>                      List PGS tracks");
     eprintln!("  libpgs extract <file> -o <output.sup>     Extract all PGS tracks");
     eprintln!("  libpgs extract <file> -t <id> -o <out>    Extract specific track");
-    eprintln!("  libpgs stream <file> [-t <id>]             Stream PGS segments to stdout");
+    eprintln!("  libpgs stream <file> [-t <id>]            Stream PGS segments to stdout");
     eprintln!("  libpgs bench <file>                       Benchmark I/O efficiency");
     eprintln!("  libpgs help                               Show this help");
     eprintln!();
@@ -165,7 +165,20 @@ fn cmd_stream(args: &[String]) -> Result<(), libpgs::error::PgsError> {
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
 
-    // Emit tracks header as first NDJSON line.
+    // Stream tracks header + display sets as NDJSON.
+    // If the consumer closes the pipe (BrokenPipe), exit cleanly.
+    match stream_ndjson(&mut out, &mut extractor) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+fn stream_ndjson(
+    out: &mut impl Write,
+    extractor: &mut libpgs::Extractor,
+) -> std::io::Result<()> {
+    // Emit tracks header as first line.
     let tracks = extractor.tracks();
     write!(out, "{{\"type\":\"tracks\",\"tracks\":[")?;
     for (ti, track) in tracks.iter().enumerate() {
@@ -183,9 +196,9 @@ fn cmd_stream(args: &[String]) -> Result<(), libpgs::error::PgsError> {
     writeln!(out, "]}}")?;
     out.flush()?;
 
-    // Stream display sets as NDJSON, one line per display set.
-    for result in &mut extractor {
-        let tds = result?;
+    // Stream display sets, one line per display set.
+    for result in extractor {
+        let tds = result.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
         let ds = &tds.display_set;
 
         write!(
@@ -215,7 +228,7 @@ fn cmd_stream(args: &[String]) -> Result<(), libpgs::error::PgsError> {
             )?;
         }
 
-        writeln!(out, "]}}")?;
+        writeln!(out, "}}")?;
         out.flush()?;
     }
 
