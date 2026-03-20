@@ -28,6 +28,7 @@ fn available_fixtures() -> Vec<&'static str> {
 #[derive(Debug, Clone)]
 enum JsonValue {
     Null,
+    Bool(bool),
     Str(String),
     Num(f64),
     Array(Vec<JsonValue>),
@@ -38,6 +39,13 @@ impl JsonValue {
     fn as_str(&self) -> Option<&str> {
         match self {
             JsonValue::Str(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    fn as_bool(&self) -> Option<bool> {
+        match self {
+            JsonValue::Bool(b) => Some(*b),
             _ => None,
         }
     }
@@ -58,6 +66,10 @@ impl JsonValue {
             JsonValue::Array(a) => Some(a),
             _ => None,
         }
+    }
+
+    fn is_null(&self) -> bool {
+        matches!(self, JsonValue::Null)
     }
 
     fn get(&self, key: &str) -> Option<&JsonValue> {
@@ -89,6 +101,14 @@ fn parse_value(b: &[u8], i: usize) -> (JsonValue, usize) {
         b'n' => {
             assert_eq!(&b[i..i + 4], b"null");
             (JsonValue::Null, i + 4)
+        }
+        b't' => {
+            assert_eq!(&b[i..i + 4], b"true");
+            (JsonValue::Bool(true), i + 4)
+        }
+        b'f' => {
+            assert_eq!(&b[i..i + 5], b"false");
+            (JsonValue::Bool(false), i + 5)
         }
         _ => parse_number(b, i),
     }
@@ -285,12 +305,41 @@ fn ndjson_tracks_header_matches_api() {
             let json_lang = jt.get("language").unwrap();
             match &at.language {
                 Some(lang) => assert_eq!(json_lang.as_str().unwrap(), lang.as_str()),
-                None => assert!(matches!(json_lang, JsonValue::Null)),
+                None => assert!(json_lang.is_null()),
             }
             assert_eq!(
                 jt.get("container").unwrap().as_str().unwrap(),
                 container_name(at.container),
             );
+
+            // Verify new metadata fields are present and match API.
+            let json_name = jt.get("name").unwrap();
+            match &at.name {
+                Some(name) => assert_eq!(json_name.as_str().unwrap(), name.as_str(),
+                    "{fixture}: name mismatch"),
+                None => assert!(json_name.is_null(), "{fixture}: expected null name"),
+            }
+
+            let json_default = jt.get("flag_default").unwrap();
+            match at.flag_default {
+                Some(v) => assert_eq!(json_default.as_bool().unwrap(), v,
+                    "{fixture}: flag_default mismatch"),
+                None => assert!(json_default.is_null(), "{fixture}: expected null flag_default"),
+            }
+
+            let json_forced = jt.get("flag_forced").unwrap();
+            match at.flag_forced {
+                Some(v) => assert_eq!(json_forced.as_bool().unwrap(), v,
+                    "{fixture}: flag_forced mismatch"),
+                None => assert!(json_forced.is_null(), "{fixture}: expected null flag_forced"),
+            }
+
+            let json_count = jt.get("display_set_count").unwrap();
+            match at.display_set_count {
+                Some(v) => assert_eq!(json_count.as_u64().unwrap(), v,
+                    "{fixture}: display_set_count mismatch"),
+                None => assert!(json_count.is_null(), "{fixture}: expected null display_set_count"),
+            }
         }
     }
 }
@@ -331,6 +380,7 @@ fn ndjson_display_sets_match_batch_extraction() {
         }
 
         let mut matched_keys: Vec<(u32, u64)> = Vec::new();
+        let mut track_index_counters: HashMap<u32, u64> = HashMap::new();
 
         for (i, line) in ds_lines.iter().enumerate() {
             let json = parse_json(line);
@@ -339,23 +389,23 @@ fn ndjson_display_sets_match_batch_extraction() {
             let tid = json.get("track_id").unwrap().as_u64().unwrap() as u32;
             let pts = json.get("pts").unwrap().as_u64().unwrap();
             let key = (tid, pts);
-            let &(track, ds) = batch_by_key
+            let &(_track, ds) = batch_by_key
                 .get(&key)
                 .unwrap_or_else(|| panic!("{fixture} line {i}: no batch match for track={tid} pts={pts}"));
 
-            // Verify metadata fields.
-            let json_lang = json.get("language").unwrap();
-            match &track.language {
-                Some(lang) => assert_eq!(json_lang.as_str().unwrap(), lang.as_str(),
-                    "{fixture} line {i}: language mismatch"),
-                None => assert!(matches!(json_lang, JsonValue::Null),
-                    "{fixture} line {i}: expected null language"),
-            }
-            assert_eq!(
-                json.get("container").unwrap().as_str().unwrap(),
-                container_name(track.container),
-                "{fixture} line {i}: container mismatch"
-            );
+            // Verify display_set lines do not carry language/container (slimmed format).
+            assert!(json.get("language").is_none(),
+                "{fixture} line {i}: display_set should not contain language");
+            assert!(json.get("container").is_none(),
+                "{fixture} line {i}: display_set should not contain container");
+
+            // Verify index field is present and sequential per track.
+            let json_index = json.get("index").unwrap().as_u64().unwrap();
+            let expected_index = track_index_counters.entry(tid).or_insert(0);
+            assert_eq!(json_index, *expected_index,
+                "{fixture} line {i}: index mismatch for track {tid}");
+            *expected_index += 1;
+
             assert_eq!(
                 json.get("pts").unwrap().as_u64().unwrap(),
                 ds.pts as u64,

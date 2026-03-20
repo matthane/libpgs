@@ -63,9 +63,27 @@ fn cmd_tracks(args: &[String]) -> Result<(), libpgs::error::PgsError> {
     println!("PGS tracks found:");
     for track in &tracks {
         let lang = track.language.as_deref().unwrap_or("unknown");
+        let mut extras = Vec::new();
+        if let Some(name) = &track.name {
+            extras.push(format!("name=\"{name}\""));
+        }
+        if let Some(true) = track.flag_default {
+            extras.push("default".to_string());
+        }
+        if let Some(true) = track.flag_forced {
+            extras.push("forced".to_string());
+        }
+        if let Some(count) = track.display_set_count {
+            extras.push(format!("display_sets={count}"));
+        }
+        let extra_str = if extras.is_empty() {
+            String::new()
+        } else {
+            format!(", {}", extras.join(", "))
+        };
         println!(
-            "  Track {}: language={}, format={:?}",
-            track.track_id, lang, track.container
+            "  Track {}: language={}, format={:?}{}",
+            track.track_id, lang, track.container, extra_str
         );
     }
 
@@ -187,27 +205,37 @@ fn stream_ndjson(
         }
         write!(
             out,
-            "{{\"track_id\":{},\"language\":{},\"container\":\"{}\"}}",
+            "{{\"track_id\":{},\"language\":{},\"container\":\"{}\",\
+             \"name\":{},\"flag_default\":{},\"flag_forced\":{},\"display_set_count\":{}}}",
             track.track_id,
             json_string_or_null(track.language.as_deref()),
             container_name(track.container),
+            json_string_or_null(track.name.as_deref()),
+            json_bool_or_null(track.flag_default),
+            json_bool_or_null(track.flag_forced),
+            json_u64_or_null(track.display_set_count),
         )?;
     }
     writeln!(out, "]}}")?;
     out.flush()?;
 
+    // Per-track index counter for display set sequence numbers.
+    let mut track_indices: std::collections::HashMap<u32, u64> = std::collections::HashMap::new();
+
     // Stream display sets, one line per display set.
     for result in extractor {
         let tds = result.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
         let ds = &tds.display_set;
+        let index = track_indices.entry(tds.track_id).or_insert(0);
+        let current_index = *index;
+        *index += 1;
 
         write!(
             out,
-            "{{\"type\":\"display_set\",\"track_id\":{},\"language\":{},\"container\":\"{}\",\
+            "{{\"type\":\"display_set\",\"track_id\":{},\"index\":{},\
              \"pts\":{},\"pts_ms\":{:.4},\"composition_state\":\"{}\",\"segments\":[",
             tds.track_id,
-            json_string_or_null(tds.language.as_deref()),
-            container_name(tds.container),
+            current_index,
             ds.pts,
             ds.pts_ms,
             composition_state_name(ds.composition_state),
@@ -238,6 +266,21 @@ fn stream_ndjson(
 fn json_string_or_null(s: Option<&str>) -> String {
     match s {
         Some(v) => format!("\"{}\"", v),
+        None => "null".to_string(),
+    }
+}
+
+fn json_bool_or_null(b: Option<bool>) -> &'static str {
+    match b {
+        Some(true) => "true",
+        Some(false) => "false",
+        None => "null",
+    }
+}
+
+fn json_u64_or_null(n: Option<u64>) -> String {
+    match n {
+        Some(v) => v.to_string(),
         None => "null".to_string(),
     }
 }

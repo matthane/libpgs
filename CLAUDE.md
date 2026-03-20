@@ -37,6 +37,7 @@ src/
 │   ├── mod.rs          # MKV orchestrator, metadata parsing, parallel extraction
 │   ├── header.rs       # EBML header + Segment layout parsing
 │   ├── tracks.rs       # PGS track discovery from Tracks element
+│   ├── tags.rs         # Tags element parsing (NUMBER_OF_FRAMES per track)
 │   ├── cues.rs         # Cues index parsing
 │   ├── cluster.rs      # Cluster map building, scanning, probing
 │   ├── block.rs        # Block header parsing
@@ -120,15 +121,17 @@ The `stream` command exposes the `Extractor` streaming API over stdout as newlin
 
 **Line 1 — track discovery:**
 ```json
-{"type":"tracks","tracks":[{"track_id":3,"language":"eng","container":"Matroska"}]}
+{"type":"tracks","tracks":[{"track_id":3,"language":"eng","container":"Matroska","name":"English Subtitles","flag_default":true,"flag_forced":false,"display_set_count":1234}]}
 ```
+
+Track fields: `track_id`, `language` (nullable), `container`, `name` (nullable, MKV TrackName), `flag_default` (nullable bool), `flag_forced` (nullable bool), `display_set_count` (nullable, from MKV Tags NUMBER_OF_FRAMES). M2TS tracks have `null` for MKV-specific fields.
 
 **Subsequent lines — one per display set, flushed immediately when yielded:**
 ```json
-{"type":"display_set","track_id":3,"language":"eng","container":"Matroska","pts":311580,"pts_ms":3462.0000,"composition_state":"EpochStart","segments":[{"type":"PresentationComposition","pts":311580,"dts":0,"size":19,"payload":"<base64>"},{"type":"EndOfDisplaySet","pts":311580,"dts":0,"size":0,"payload":""}]}
+{"type":"display_set","track_id":3,"index":0,"pts":311580,"pts_ms":3462.0000,"composition_state":"EpochStart","segments":[{"type":"PresentationComposition","pts":311580,"dts":0,"size":19,"payload":"<base64>"},{"type":"EndOfDisplaySet","pts":311580,"dts":0,"size":0,"payload":""}]}
 ```
 
-Fields per display set: `track_id`, `language` (nullable), `container`, `pts` (90 kHz ticks), `pts_ms`, `composition_state` (Normal/AcquisitionPoint/EpochStart). Each segment includes `type`, `pts`, `dts`, `size`, and base64-encoded `payload`.
+Fields per display set: `track_id` (correlates with tracks header), `index` (0-based per-track sequence number), `pts` (90 kHz ticks), `pts_ms`, `composition_state` (Normal/AcquisitionPoint/EpochStart). Each segment includes `type`, `pts`, `dts`, `size`, and base64-encoded `payload`.
 
 ## Code conventions
 
