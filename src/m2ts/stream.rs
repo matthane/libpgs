@@ -52,6 +52,10 @@ impl M2tsExtractorState {
                     track_id: t.pid as u32,
                     language: t.language.clone(),
                     container,
+                    name: None,
+                    flag_default: None,
+                    flag_forced: None,
+                    display_set_count: None,
                 });
             }
         }

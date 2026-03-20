@@ -32,6 +32,14 @@ pub struct PgsTrackInfo {
     pub language: Option<String>,
     /// Container format.
     pub container: ContainerFormat,
+    /// Track name / title (MKV TrackName).
+    pub name: Option<String>,
+    /// Whether this track is flagged as default (MKV FlagDefault).
+    pub flag_default: Option<bool>,
+    /// Whether this track contains forced subtitles (MKV FlagForced).
+    pub flag_forced: Option<bool>,
+    /// Total number of display sets / frames, if known from container metadata.
+    pub display_set_count: Option<u64>,
 }
 
 /// Display sets extracted from a single PGS track.
@@ -143,11 +151,7 @@ impl Extractor {
             ContainerFormat::Matroska => {
                 let meta = mkv::prepare_mkv_metadata(&mut reader)?;
                 let tracks: Vec<PgsTrackInfo> = meta.pgs_tracks.iter()
-                    .map(|t| PgsTrackInfo {
-                        track_id: t.track_number as u32,
-                        language: t.language.clone(),
-                        container: ContainerFormat::Matroska,
-                    })
+                    .map(|t| mkv_track_to_info(t, &meta.frame_counts))
                     .collect();
 
                 let mut state = MkvExtractorState::new(
@@ -175,11 +179,7 @@ impl Extractor {
 
                 let meta = m2ts::prepare_m2ts_metadata(&mut reader, Some(path))?;
                 let tracks: Vec<PgsTrackInfo> = meta.tracks.iter()
-                    .map(|t| PgsTrackInfo {
-                        track_id: t.pid as u32,
-                        language: t.language.clone(),
-                        container: format,
-                    })
+                    .map(|t| m2ts_track_to_info(t, format))
                     .collect();
 
                 let state = M2tsExtractorState::new(reader, meta, format, None);
@@ -242,11 +242,7 @@ impl Extractor {
                 let meta = mkv::prepare_mkv_metadata(&mut reader)?;
                 let tracks: Vec<PgsTrackInfo> = meta.pgs_tracks.iter()
                     .filter(|t| track_ids.contains(&(t.track_number as u32)))
-                    .map(|t| PgsTrackInfo {
-                        track_id: t.track_number as u32,
-                        language: t.language.clone(),
-                        container: ContainerFormat::Matroska,
-                    })
+                    .map(|t| mkv_track_to_info(t, &meta.frame_counts))
                     .collect();
 
                 let mut state = MkvExtractorState::new(
@@ -274,11 +270,7 @@ impl Extractor {
                 let meta = m2ts::prepare_m2ts_metadata(&mut reader, Some(path))?;
                 let tracks: Vec<PgsTrackInfo> = meta.tracks.iter()
                     .filter(|t| track_ids.contains(&(t.pid as u32)))
-                    .map(|t| PgsTrackInfo {
-                        track_id: t.pid as u32,
-                        language: t.language.clone(),
-                        container: fmt,
-                    })
+                    .map(|t| m2ts_track_to_info(t, fmt))
                     .collect();
 
                 let state = M2tsExtractorState::new(reader, meta, fmt, Some(track_ids));
@@ -342,28 +334,30 @@ impl Extractor {
             }
         }
 
+        // Build track info lookup from the pre-parsed metadata.
+        let track_info_map: HashMap<u32, PgsTrackInfo> = self.tracks.iter()
+            .map(|t| (t.track_id, t.clone()))
+            .collect();
+
         // Sequential drain.
-        let mut track_map: HashMap<u32, (PgsTrackInfo, Vec<DisplaySet>)> = HashMap::new();
+        let mut track_map: HashMap<u32, Vec<DisplaySet>> = HashMap::new();
         let mut track_order: Vec<u32> = Vec::new();
 
         for result in self.by_ref() {
             let tds = result?;
             let entry = track_map.entry(tds.track_id).or_insert_with(|| {
                 track_order.push(tds.track_id);
-                (PgsTrackInfo {
-                    track_id: tds.track_id,
-                    language: tds.language.clone(),
-                    container: tds.container,
-                }, Vec::new())
+                Vec::new()
             });
-            entry.1.push(tds.display_set);
+            entry.push(tds.display_set);
         }
 
         Ok(track_order.into_iter()
             .filter_map(|id| {
-                let (info, display_sets) = track_map.remove(&id)?;
+                let display_sets = track_map.remove(&id)?;
                 if display_sets.is_empty() { return None; }
-                Some(TrackDisplaySets { track: info, display_sets })
+                let track = track_info_map.get(&id)?.clone();
+                Some(TrackDisplaySets { track, display_sets })
             })
             .collect())
     }
@@ -431,6 +425,32 @@ fn detect_format(reader: &mut SeekBufReader<File>) -> Result<ContainerFormat, Pg
     Err(PgsError::UnknownFormat)
 }
 
+/// Convert an MKV track to public track info.
+fn mkv_track_to_info(t: &mkv::tracks::MkvPgsTrack, frame_counts: &HashMap<u64, u64>) -> PgsTrackInfo {
+    PgsTrackInfo {
+        track_id: t.track_number as u32,
+        language: t.language.clone(),
+        container: ContainerFormat::Matroska,
+        name: t.name.clone(),
+        flag_default: t.flag_default,
+        flag_forced: t.flag_forced,
+        display_set_count: t.track_uid.and_then(|uid| frame_counts.get(&uid).copied()),
+    }
+}
+
+/// Convert an M2TS track to public track info.
+fn m2ts_track_to_info(t: &m2ts::M2tsPgsTrack, format: ContainerFormat) -> PgsTrackInfo {
+    PgsTrackInfo {
+        track_id: t.pid as u32,
+        language: t.language.clone(),
+        container: format,
+        name: None,
+        flag_default: None,
+        flag_forced: None,
+        display_set_count: None,
+    }
+}
+
 /// List all PGS tracks in a container file.
 pub fn list_pgs_tracks(path: &Path) -> Result<Vec<PgsTrackInfo>, PgsError> {
     let file = File::open(path)?;
@@ -440,25 +460,16 @@ pub fn list_pgs_tracks(path: &Path) -> Result<Vec<PgsTrackInfo>, PgsError> {
 
     match format {
         ContainerFormat::Matroska => {
-            let tracks = mkv::list_pgs_tracks_mkv(&mut reader)?;
-            Ok(tracks
-                .into_iter()
-                .map(|t| PgsTrackInfo {
-                    track_id: t.track_number as u32,
-                    language: t.language,
-                    container: ContainerFormat::Matroska,
-                })
+            let meta = mkv::prepare_mkv_metadata(&mut reader)?;
+            Ok(meta.pgs_tracks.iter()
+                .map(|t| mkv_track_to_info(t, &meta.frame_counts))
                 .collect())
         }
         ContainerFormat::M2ts | ContainerFormat::TransportStream => {
             let tracks = m2ts::list_pgs_tracks_m2ts(&mut reader, Some(path))?;
             Ok(tracks
-                .into_iter()
-                .map(|t| PgsTrackInfo {
-                    track_id: t.pid as u32,
-                    language: t.language,
-                    container: format,
-                })
+                .iter()
+                .map(|t| m2ts_track_to_info(t, format))
                 .collect())
         }
     }
@@ -482,30 +493,31 @@ pub fn extract_all_display_sets_with_stats(
     path: &Path,
 ) -> Result<(Vec<TrackDisplaySets>, ExtractionStats), PgsError> {
     let mut extractor = Extractor::open(path)?;
+    let track_info_map: HashMap<u32, PgsTrackInfo> = extractor.tracks().iter()
+        .map(|t| (t.track_id, t.clone()))
+        .collect();
+
     let results = extractor.by_ref().collect::<Result<Vec<_>, _>>()?;
     let stats = extractor.stats().clone();
 
     // Group by track.
-    let mut track_map: HashMap<u32, (PgsTrackInfo, Vec<DisplaySet>)> = HashMap::new();
+    let mut track_map: HashMap<u32, Vec<DisplaySet>> = HashMap::new();
     let mut track_order: Vec<u32> = Vec::new();
 
     for tds in results {
         let entry = track_map.entry(tds.track_id).or_insert_with(|| {
             track_order.push(tds.track_id);
-            (PgsTrackInfo {
-                track_id: tds.track_id,
-                language: tds.language.clone(),
-                container: tds.container,
-            }, Vec::new())
+            Vec::new()
         });
-        entry.1.push(tds.display_set);
+        entry.push(tds.display_set);
     }
 
     let grouped = track_order.into_iter()
         .filter_map(|id| {
-            let (info, display_sets) = track_map.remove(&id)?;
+            let display_sets = track_map.remove(&id)?;
             if display_sets.is_empty() { return None; }
-            Some(TrackDisplaySets { track: info, display_sets })
+            let track = track_info_map.get(&id)?.clone();
+            Some(TrackDisplaySets { track, display_sets })
         })
         .collect();
 

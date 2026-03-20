@@ -78,6 +78,11 @@ impl MkvExtractorState {
                     track_id: t.track_number as u32,
                     language: t.language.clone(),
                     container: ContainerFormat::Matroska,
+                    name: t.name.clone(),
+                    flag_default: t.flag_default,
+                    flag_forced: t.flag_forced,
+                    display_set_count: t.track_uid
+                        .and_then(|uid| metadata.frame_counts.get(&uid).copied()),
                 });
             }
         }
