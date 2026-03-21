@@ -77,6 +77,6 @@ pub mod ids {
     pub const TARGETS: u64 = 0x63C0;
     pub const TAG_TRACK_UID: u64 = 0x63C5;
     pub const SIMPLE_TAG: u64 = 0x67C8;
-    pub const TAG_NAME: u64 = 0x4587;
+    pub const TAG_NAME: u64 = 0x45A3;
     pub const TAG_STRING: u64 = 0x4487;
 }
