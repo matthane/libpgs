@@ -4,6 +4,16 @@ A Rust library and CLI for extracting and parsing PGS (Presentation Graphic Stre
 
 > **Note:** This project is under active development.
 
+### Cue-based extraction
+
+Most tools (ffmpeg, mkvextract) extract subtitle tracks by reading through the entire MKV file linearly — parsing every cluster and discarding the video/audio blocks they don't need. For a 40 GB Blu-ray remux where the PGS subtitle data is only a few megabytes, this means reading tens of gigabytes just to find the subtitle blocks.
+
+libpgs takes a different approach for MKV files that contain a Cues index. It reads the Cues element to identify exactly which clusters hold subtitle data, then seeks directly to those locations — skipping everything else. It also uses `CueRelativePosition` for sub-cluster seeking when available, jumping straight to the relevant block within a cluster.
+
+The result is that extraction I/O scales with the size of the subtitle data, not the size of the file. On a typical Blu-ray remux, libpgs reads less than 1% of the file — often under 0.1% — compared to the full file read required by conventional tools. This is especially noticeable on network-attached storage where seek latency matters, and for batch workflows that process many large files. You can verify the difference on your own files with `libpgs bench`.
+
+When Cues are not present, libpgs falls back to a single-pass sequential scan.
+
 ## Installation
 
 Add to your project:
