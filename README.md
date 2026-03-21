@@ -57,7 +57,7 @@ The `stream` command outputs newline-delimited JSON (NDJSON) to stdout, allowing
 The first line is a track discovery message with all available metadata:
 
 ```json
-{"type":"tracks","tracks":[{"track_id":3,"language":"eng","container":"Matroska","name":"English Subtitles","flag_default":true,"flag_forced":false,"display_set_count":1234}]}
+{"type":"tracks","tracks":[{"track_id":3,"language":"eng","container":"Matroska","name":"English Subtitles","flag_default":true,"flag_forced":false,"display_set_count":1234,"has_cues":true}]}
 ```
 
 Track fields:
@@ -68,6 +68,7 @@ Track fields:
 - `flag_default` — whether the track is flagged as default (nullable, MKV only)
 - `flag_forced` — whether the track is flagged as forced (nullable, MKV only)
 - `display_set_count` — total number of display sets, from MKV Tags NUMBER_OF_FRAMES (nullable, MKV only)
+- `has_cues` — whether the container has cue/index entries for this track (nullable, MKV only)
 
 Each subsequent line is a display set with its per-track index:
 
