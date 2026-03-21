@@ -139,3 +139,7 @@ Fields per display set: `track_id` (correlates with tracks header), `index` (0-b
 - Tests use production code paths (e.g., M2tsExtractorState with temp files), not test-only helpers
 - Constants for tuning: `MKV_PROBE_THRESHOLD`, `CLUSTER_PROBE_SIZE`, `SCAN_BLOCK_SIZE`, `M2TS_BUF_SIZE`
 - Error handling via `PgsError` enum with `?` propagation throughout
+
+## Release hygiene
+
+- `Cargo.toml` version must match the latest git release tag (e.g., tag `v0.2.0` → `version = "0.2.0"`). When creating a release or noticing a mismatch, update `Cargo.toml` accordingly.
