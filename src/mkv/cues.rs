@@ -8,6 +8,8 @@ use std::io::{Read, Seek};
 pub struct PgsCuePoint {
     /// Timestamp of the cue (in Cluster timestamp units).
     pub time: u64,
+    /// Track number this cue point references.
+    pub track_number: u64,
     /// Absolute byte position of the Cluster.
     pub cluster_position: u64,
     /// Relative byte position of the Block within the Cluster, if available.
@@ -40,15 +42,14 @@ pub fn parse_cues_for_tracks<R: Read + Seek>(
         let child_size = read_element_size(reader)?;
 
         if child_id.value == ids::CUE_POINT {
-            if let Some(cp) = parse_cue_point(
+            parse_cue_point(
                 reader,
                 reader.position(),
                 child_size.value,
                 segment_data_start,
                 pgs_track_numbers,
-            )? {
-                cue_points.push(cp);
-            }
+                &mut cue_points,
+            )?;
         } else {
             reader.skip(child_size.value)?;
         }
@@ -63,12 +64,14 @@ fn parse_cue_point<R: Read + Seek>(
     data_size: u64,
     segment_data_start: u64,
     pgs_track_numbers: &[u64],
-) -> Result<Option<PgsCuePoint>, PgsError> {
+    out: &mut Vec<PgsCuePoint>,
+) -> Result<(), PgsError> {
     let end = data_start + data_size;
 
     let mut cue_time: u64 = 0;
-    let mut matched_cluster_pos: Option<u64> = None;
-    let mut matched_relative_pos: Option<u64> = None;
+    // Collect all matching CueTrackPositions entries — a single CuePoint
+    // can reference multiple tracks (e.g. two PGS tracks at the same timestamp).
+    let mut matches: Vec<(u64, u64, Option<u64>)> = Vec::new();
 
     while reader.position() < end {
         let child_id = read_element_id(reader)?;
@@ -105,8 +108,7 @@ fn parse_cue_point<R: Read + Seek>(
                 }
 
                 if pgs_track_numbers.contains(&track) {
-                    matched_cluster_pos = Some(segment_data_start + cluster_pos);
-                    matched_relative_pos = relative_pos;
+                    matches.push((track, segment_data_start + cluster_pos, relative_pos));
                 }
             }
             _ => {
@@ -115,13 +117,14 @@ fn parse_cue_point<R: Read + Seek>(
         }
     }
 
-    if let Some(cluster_pos) = matched_cluster_pos {
-        Ok(Some(PgsCuePoint {
+    for (track, cluster_pos, relative_pos) in matches {
+        out.push(PgsCuePoint {
             time: cue_time,
+            track_number: track,
             cluster_position: cluster_pos,
-            relative_position: matched_relative_pos,
-        }))
-    } else {
-        Ok(None)
+            relative_position: relative_pos,
+        });
     }
+
+    Ok(())
 }

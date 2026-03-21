@@ -114,12 +114,14 @@ impl MkvExtractorState {
     ///
     /// Separate from `new()` because it needs to borrow `self.reader` mutably.
     pub(crate) fn init_source(&mut self) -> Result<(), PgsError> {
-        // Filter cue points to only reference active tracks.
+        // Filter cue points to only those referencing active tracks.
+        let active_tracks: Vec<u64> = self.assemblers.keys().copied().collect();
         let filtered_cues = self.metadata.cue_points.as_ref().and_then(|cues| {
-            // Cue points reference clusters that may contain blocks for any track.
-            // We keep all cue points since a cluster may hold blocks for multiple tracks
-            // and we can't know which tracks a cue point covers without scanning.
-            if cues.is_empty() { None } else { Some(cues.clone()) }
+            let filtered: Vec<_> = cues.iter()
+                .filter(|cp| active_tracks.contains(&cp.track_number))
+                .cloned()
+                .collect();
+            if filtered.is_empty() { None } else { Some(filtered) }
         });
 
         if let Some(cue_points) = filtered_cues {
