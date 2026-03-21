@@ -144,14 +144,24 @@ fn cmd_bench(args: &[String]) -> Result<(), libpgs::error::PgsError> {
     Ok(())
 }
 
+/// Parse a comma-separated list of track IDs (e.g. "3", "3,5,8").
+fn parse_track_ids(value: &str) -> Vec<u32> {
+    value.split(',')
+        .map(|s| s.trim().parse().unwrap_or_else(|_| {
+            eprintln!("Invalid track ID: {}", s.trim());
+            process::exit(1);
+        }))
+        .collect()
+}
+
 fn cmd_stream(args: &[String]) -> Result<(), libpgs::error::PgsError> {
     if args.is_empty() {
-        eprintln!("Usage: libpgs stream <file> [-t <track_id>]");
+        eprintln!("Usage: libpgs stream <file> [-t <track_id>[,<track_id>...]]");
         process::exit(1);
     }
 
     let input = PathBuf::from(&args[0]);
-    let mut track_id: Option<u32> = None;
+    let mut track_ids: Vec<u32> = Vec::new();
 
     let mut i = 1;
     while i < args.len() {
@@ -162,10 +172,7 @@ fn cmd_stream(args: &[String]) -> Result<(), libpgs::error::PgsError> {
                     eprintln!("Missing value for -t");
                     process::exit(1);
                 }
-                track_id = Some(args[i].parse().unwrap_or_else(|_| {
-                    eprintln!("Invalid track ID: {}", args[i]);
-                    process::exit(1);
-                }));
+                track_ids.extend(parse_track_ids(&args[i]));
             }
             other => {
                 eprintln!("Unknown option: {other}");
@@ -176,8 +183,8 @@ fn cmd_stream(args: &[String]) -> Result<(), libpgs::error::PgsError> {
     }
 
     let mut extractor = libpgs::Extractor::open(&input)?;
-    if let Some(tid) = track_id {
-        extractor = extractor.with_track_filter(&[tid]);
+    if !track_ids.is_empty() {
+        extractor = extractor.with_track_filter(&track_ids);
     }
 
     let stdout = std::io::stdout();
@@ -342,13 +349,13 @@ fn base64_encode(data: &[u8]) -> String {
 
 fn cmd_extract(args: &[String]) -> Result<(), libpgs::error::PgsError> {
     if args.is_empty() {
-        eprintln!("Usage: libpgs extract <file> -o <output.sup> [-t <track_id>]");
+        eprintln!("Usage: libpgs extract <file> -o <output.sup> [-t <track_id>[,<track_id>...]]");
         process::exit(1);
     }
 
     let input = PathBuf::from(&args[0]);
     let mut output: Option<PathBuf> = None;
-    let mut track_id: Option<u32> = None;
+    let mut track_ids: Vec<u32> = Vec::new();
 
     let mut i = 1;
     while i < args.len() {
@@ -367,10 +374,7 @@ fn cmd_extract(args: &[String]) -> Result<(), libpgs::error::PgsError> {
                     eprintln!("Missing value for -t");
                     process::exit(1);
                 }
-                track_id = Some(args[i].parse().unwrap_or_else(|_| {
-                    eprintln!("Invalid track ID: {}", args[i]);
-                    process::exit(1);
-                }));
+                track_ids.extend(parse_track_ids(&args[i]));
             }
             other => {
                 eprintln!("Unknown option: {other}");
@@ -387,8 +391,9 @@ fn cmd_extract(args: &[String]) -> Result<(), libpgs::error::PgsError> {
 
     let start = Instant::now();
 
-    if let Some(tid) = track_id {
+    if track_ids.len() == 1 {
         // Single-track extraction.
+        let tid = track_ids[0];
         println!("Extracting PGS track {} from: {}", tid, input.display());
 
         let display_sets = libpgs::extract_display_sets(&input, Some(tid))?;
@@ -414,9 +419,19 @@ fn cmd_extract(args: &[String]) -> Result<(), libpgs::error::PgsError> {
         );
     } else {
         // Multi-track extraction: write <stem>_track<id>.sup per track.
-        println!("Extracting all PGS tracks from: {}", input.display());
+        if track_ids.is_empty() {
+            println!("Extracting all PGS tracks from: {}", input.display());
+        } else {
+            println!("Extracting PGS tracks {:?} from: {}", track_ids, input.display());
+        }
 
-        let track_results = libpgs::extract_all_display_sets(&input)?;
+        let track_results = if track_ids.is_empty() {
+            libpgs::extract_all_display_sets(&input)?
+        } else {
+            libpgs::Extractor::open(&input)?
+                .with_track_filter(&track_ids)
+                .collect_by_track()?
+        };
         let elapsed_extract = start.elapsed();
 
         if track_results.is_empty() {
