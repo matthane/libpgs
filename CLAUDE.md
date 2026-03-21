@@ -39,7 +39,7 @@ src/
 │   ├── tracks.rs       # PGS track discovery from Tracks element
 │   ├── tags.rs         # Tags element parsing (NUMBER_OF_FRAMES per track)
 │   ├── cues.rs         # Cues index parsing
-│   ├── cluster.rs      # Cluster map building, scanning, probing
+│   ├── cluster.rs      # Cluster scanning for PGS blocks
 │   ├── block.rs        # Block header parsing
 │   └── stream.rs       # MkvExtractorState — streaming state machine
 ├── m2ts/
@@ -62,10 +62,9 @@ src/
 
 **History catalog:** Every yielded display set is cloned into an internal `Vec`. Access via `history()` / `history_for_track()`. Manage memory via `drain_history()` / `clear_history()`.
 
-**MKV three-tier extraction strategy:**
+**MKV two-tier extraction strategy:**
 1. **Cues fast path** — seek directly to clusters via cue point offsets (uses `relative_position` for sub-cluster seeking)
-2. **Cluster probe** — build cluster map, probe each with 16KB window, full-scan only active clusters
-3. **Sequential scan** — linear fallback
+2. **Sequential scan** — single-pass linear read through the Segment with 2 MB I/O buffer, processing Clusters as encountered
 
 **MKV parallel optimization:** For batch collection (`collect_by_track()`), if Cues are available and extraction hasn't started, uses scoped threads (1–8 workers) with independent file handles to pipeline NAS latency.
 
