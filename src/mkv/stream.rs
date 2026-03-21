@@ -33,6 +33,8 @@ pub(crate) struct MkvExtractorState {
 
 /// Block sourcing strategy — each variant is a resumable state.
 enum MkvBlockSource {
+    /// Not yet initialized — `init_source()` will be called on first `next()`.
+    Uninitialized,
     /// Cues-based extraction: sequential seek to each cue point.
     Cues {
         cue_points: Vec<PgsCuePoint>,
@@ -104,7 +106,7 @@ impl MkvExtractorState {
             reader,
             path,
             metadata,
-            source: MkvBlockSource::Done, // placeholder — initialized below
+            source: MkvBlockSource::Uninitialized,
             assemblers,
             compression,
             track_info,
@@ -114,10 +116,11 @@ impl MkvExtractorState {
         })
     }
 
-    /// Initialize the block source strategy. Must be called after construction.
+    /// Initialize the block source strategy (lazy — called on first iteration).
     ///
-    /// Separate from `new()` because it needs to borrow `self.reader` mutably.
-    pub(crate) fn init_source(&mut self) -> Result<(), PgsError> {
+    /// Deferred from construction so that track metadata is available immediately
+    /// without waiting for potentially expensive cluster map building.
+    fn init_source(&mut self) -> Result<(), PgsError> {
         // Filter cue points to only those referencing active tracks.
         let active_tracks: Vec<u64> = self.assemblers.keys().copied().collect();
         let filtered_cues = self.metadata.cue_points.as_ref().and_then(|cues| {
@@ -156,6 +159,15 @@ impl MkvExtractorState {
 
     /// Advance the state machine to produce the next display set.
     pub(crate) fn next_display_set(&mut self) -> Option<Result<TrackDisplaySet, PgsError>> {
+        // Lazy initialization: deferred from open() so track metadata is
+        // available immediately without waiting for cluster map building.
+        if matches!(self.source, MkvBlockSource::Uninitialized) {
+            if let Err(e) = self.init_source() {
+                self.source = MkvBlockSource::Done;
+                return Some(Err(e));
+            }
+        }
+
         loop {
             // Drain pending display sets first.
             if let Some(tds) = self.pending.pop_front() {
@@ -222,6 +234,7 @@ impl MkvExtractorState {
                 Ok(true)
             }
 
+            MkvBlockSource::Uninitialized => unreachable!("init_source not called"),
             MkvBlockSource::Done => Ok(false),
         }
     }

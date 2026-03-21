@@ -160,13 +160,12 @@ impl Extractor {
                     .map(|t| mkv_track_to_info(t, &meta.frame_counts, &meta.cue_points))
                     .collect();
 
-                let mut state = MkvExtractorState::new(
+                let state = MkvExtractorState::new(
                     reader,
                     path.to_path_buf(),
                     meta,
                     None,
                 )?;
-                state.init_source()?;
 
                 Ok(Extractor {
                     inner: ExtractorInner::Mkv(state),
@@ -264,13 +263,12 @@ impl Extractor {
                     .map(|t| mkv_track_to_info(t, &meta.frame_counts, &meta.cue_points))
                     .collect();
 
-                let mut state = MkvExtractorState::new(
+                let state = MkvExtractorState::new(
                     reader,
                     path.to_path_buf(),
                     meta,
                     Some(track_ids),
                 )?;
-                state.init_source()?;
 
                 Ok(Extractor {
                     inner: ExtractorInner::Mkv(state),
