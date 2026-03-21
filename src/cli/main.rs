@@ -76,6 +76,9 @@ fn cmd_tracks(args: &[String]) -> Result<(), libpgs::error::PgsError> {
         if let Some(count) = track.display_set_count {
             extras.push(format!("display_sets={count}"));
         }
+        if let Some(cues) = track.has_cues {
+            extras.push(format!("has_cues={cues}"));
+        }
         let extra_str = if extras.is_empty() {
             String::new()
         } else {
@@ -213,7 +216,8 @@ fn stream_ndjson(
         write!(
             out,
             "{{\"track_id\":{},\"language\":{},\"container\":\"{}\",\
-             \"name\":{},\"flag_default\":{},\"flag_forced\":{},\"display_set_count\":{}}}",
+             \"name\":{},\"flag_default\":{},\"flag_forced\":{},\"display_set_count\":{},\
+             \"has_cues\":{}}}",
             track.track_id,
             json_string_or_null(track.language.as_deref()),
             container_name(track.container),
@@ -221,6 +225,7 @@ fn stream_ndjson(
             json_bool_or_null(track.flag_default),
             json_bool_or_null(track.flag_forced),
             json_u64_or_null(track.display_set_count),
+            json_bool_or_null(track.has_cues),
         )?;
     }
     writeln!(out, "]}}")?;

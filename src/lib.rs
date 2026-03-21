@@ -43,6 +43,8 @@ pub struct PgsTrackInfo {
     pub flag_forced: Option<bool>,
     /// Total number of display sets / frames, if known from container metadata.
     pub display_set_count: Option<u64>,
+    /// Whether the container has cue/index entries for this track (MKV only).
+    pub has_cues: Option<bool>,
 }
 
 /// Display sets extracted from a single PGS track.
@@ -155,7 +157,7 @@ impl Extractor {
             ContainerFormat::Matroska => {
                 let meta = mkv::prepare_mkv_metadata(&mut reader)?;
                 let tracks: Vec<PgsTrackInfo> = meta.pgs_tracks.iter()
-                    .map(|t| mkv_track_to_info(t, &meta.frame_counts))
+                    .map(|t| mkv_track_to_info(t, &meta.frame_counts, &meta.cue_points))
                     .collect();
 
                 let mut state = MkvExtractorState::new(
@@ -259,7 +261,7 @@ impl Extractor {
                 let meta = mkv::prepare_mkv_metadata(&mut reader)?;
                 let tracks: Vec<PgsTrackInfo> = meta.pgs_tracks.iter()
                     .filter(|t| track_ids.contains(&(t.track_number as u32)))
-                    .map(|t| mkv_track_to_info(t, &meta.frame_counts))
+                    .map(|t| mkv_track_to_info(t, &meta.frame_counts, &meta.cue_points))
                     .collect();
 
                 let mut state = MkvExtractorState::new(
@@ -478,7 +480,14 @@ fn detect_format(reader: &mut SeekBufReader<File>) -> Result<ContainerFormat, Pg
 }
 
 /// Convert an MKV track to public track info.
-fn mkv_track_to_info(t: &mkv::tracks::MkvPgsTrack, frame_counts: &HashMap<u64, u64>) -> PgsTrackInfo {
+fn mkv_track_to_info(
+    t: &mkv::tracks::MkvPgsTrack,
+    frame_counts: &HashMap<u64, u64>,
+    cue_points: &Option<Vec<mkv::cues::PgsCuePoint>>,
+) -> PgsTrackInfo {
+    let has_cues = Some(cue_points.as_ref().is_some_and(|cues| {
+        cues.iter().any(|cp| cp.track_number == t.track_number)
+    }));
     PgsTrackInfo {
         track_id: t.track_number as u32,
         language: t.language.clone(),
@@ -487,6 +496,7 @@ fn mkv_track_to_info(t: &mkv::tracks::MkvPgsTrack, frame_counts: &HashMap<u64, u
         flag_default: t.flag_default,
         flag_forced: t.flag_forced,
         display_set_count: t.track_uid.and_then(|uid| frame_counts.get(&uid).copied()),
+        has_cues,
     }
 }
 
@@ -500,6 +510,7 @@ fn sup_track_info() -> PgsTrackInfo {
         flag_default: None,
         flag_forced: None,
         display_set_count: None,
+        has_cues: None,
     }
 }
 
@@ -513,6 +524,7 @@ fn m2ts_track_to_info(t: &m2ts::M2tsPgsTrack, format: ContainerFormat) -> PgsTra
         flag_default: None,
         flag_forced: None,
         display_set_count: None,
+        has_cues: None,
     }
 }
 
@@ -527,7 +539,7 @@ pub fn list_pgs_tracks(path: &Path) -> Result<Vec<PgsTrackInfo>, PgsError> {
         ContainerFormat::Matroska => {
             let meta = mkv::prepare_mkv_metadata(&mut reader)?;
             Ok(meta.pgs_tracks.iter()
-                .map(|t| mkv_track_to_info(t, &meta.frame_counts))
+                .map(|t| mkv_track_to_info(t, &meta.frame_counts, &meta.cue_points))
                 .collect())
         }
         ContainerFormat::M2ts | ContainerFormat::TransportStream => {

@@ -342,6 +342,13 @@ fn ndjson_tracks_header_matches_api() {
                     "{fixture}: display_set_count mismatch"),
                 None => assert!(json_count.is_null(), "{fixture}: expected null display_set_count"),
             }
+
+            let json_has_cues = jt.get("has_cues").unwrap();
+            match at.has_cues {
+                Some(v) => assert_eq!(json_has_cues.as_bool().unwrap(), v,
+                    "{fixture}: has_cues mismatch"),
+                None => assert!(json_has_cues.is_null(), "{fixture}: expected null has_cues"),
+            }
         }
     }
 }

@@ -74,6 +74,9 @@ impl MkvExtractorState {
         let mut track_info = HashMap::new();
         for t in &metadata.pgs_tracks {
             if active_tracks.contains(&t.track_number) {
+                let has_cues = Some(metadata.cue_points.as_ref().is_some_and(|cues| {
+                    cues.iter().any(|cp| cp.track_number == t.track_number)
+                }));
                 track_info.insert(t.track_number, PgsTrackInfo {
                     track_id: t.track_number as u32,
                     language: t.language.clone(),
@@ -83,6 +86,7 @@ impl MkvExtractorState {
                     flag_forced: t.flag_forced,
                     display_set_count: t.track_uid
                         .and_then(|uid| metadata.frame_counts.get(&uid).copied()),
+                    has_cues,
                 });
             }
         }

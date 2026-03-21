@@ -56,6 +56,7 @@ impl M2tsExtractorState {
                     flag_default: None,
                     flag_forced: None,
                     display_set_count: None,
+                    has_cues: None,
                 });
             }
         }
