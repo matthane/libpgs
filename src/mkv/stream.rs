@@ -1,8 +1,9 @@
+use crate::ebml::{ids, read_element_id, read_element_size};
 use crate::error::PgsError;
 use crate::io::SeekBufReader;
 use crate::pgs::DisplaySetAssembler;
-use crate::{ContainerFormat, PgsTrackInfo, TrackDisplaySet};
-use super::cluster::{self, ClusterEntry};
+use crate::{ContainerFormat, MkvStrategy, PgsTrackInfo, TrackDisplaySet};
+use super::cluster;
 use super::cues::PgsCuePoint;
 use super::tracks::ContentCompAlgo;
 use super::{
@@ -16,7 +17,7 @@ use std::path::PathBuf;
 /// Streaming MKV extractor state machine.
 ///
 /// Yields `TrackDisplaySet` one at a time by advancing through the MKV file
-/// using whichever strategy (cues or sequential cluster scan) is best.
+/// using whichever strategy (cues or sequential scan) is best.
 pub(crate) struct MkvExtractorState {
     reader: SeekBufReader<File>,
     path: PathBuf,
@@ -29,6 +30,8 @@ pub(crate) struct MkvExtractorState {
     pending: VecDeque<TrackDisplaySet>,
     /// Whether any display sets have been yielded (for collect_parallel check).
     yielded_count: usize,
+    /// Strategy override for benchmarking.
+    strategy: MkvStrategy,
 }
 
 /// Block sourcing strategy — each variant is a resumable state.
@@ -42,10 +45,13 @@ enum MkvBlockSource {
         cluster_header_cache: HashMap<u64, u64>,
         visited_clusters: HashSet<u64>,
     },
-    /// Sequential cluster scan: full-scan every cluster.
-    ClusterScan {
-        cluster_map: Vec<ClusterEntry>,
-        cluster_index: usize,
+    /// Single-pass linear scan: read through the Segment, processing Clusters
+    /// as they're encountered without building a map first.
+    SequentialScan {
+        /// Current read position in the file.
+        current_position: u64,
+        /// End of the Segment data.
+        segment_data_end: u64,
     },
     /// Extraction complete.
     Done,
@@ -61,6 +67,7 @@ impl MkvExtractorState {
         path: PathBuf,
         metadata: MkvMetadata,
         track_filter: Option<&[u32]>,
+        strategy: MkvStrategy,
     ) -> Result<Self, PgsError> {
         // Determine which tracks to extract.
         let active_tracks: Vec<u64> = if let Some(filter) = track_filter {
@@ -113,6 +120,7 @@ impl MkvExtractorState {
             timestamp_scale,
             pending: VecDeque::new(),
             yielded_count: 0,
+            strategy,
         })
     }
 
@@ -121,38 +129,40 @@ impl MkvExtractorState {
     /// Deferred from construction so that track metadata is available immediately
     /// without waiting for potentially expensive cluster map building.
     fn init_source(&mut self) -> Result<(), PgsError> {
-        // Filter cue points to only those referencing active tracks.
-        let active_tracks: Vec<u64> = self.assemblers.keys().copied().collect();
-        let filtered_cues = self.metadata.cue_points.as_ref().and_then(|cues| {
-            let filtered: Vec<_> = cues.iter()
-                .filter(|cp| active_tracks.contains(&cp.track_number))
-                .cloned()
-                .collect();
-            if filtered.is_empty() { None } else { Some(filtered) }
-        });
+        let first_cluster = self.metadata.layout.first_cluster_position
+            .ok_or_else(|| PgsError::InvalidMkv("no Clusters found".into()))?;
 
-        if let Some(cue_points) = filtered_cues {
-            self.source = MkvBlockSource::Cues {
-                cue_points,
-                index: 0,
-                cluster_header_cache: HashMap::new(),
-                visited_clusters: HashSet::new(),
-            };
-        } else {
-            let first_cluster = self.metadata.layout.first_cluster_position
-                .ok_or_else(|| PgsError::InvalidMkv("no Clusters found".into()))?;
+        // Auto: use Cues if available, otherwise fall back to Sequential.
+        if self.strategy == MkvStrategy::Auto {
+            let active_tracks: Vec<u64> = self.assemblers.keys().copied().collect();
+            let filtered_cues = self.metadata.cue_points.as_ref().and_then(|cues| {
+                let filtered: Vec<_> = cues.iter()
+                    .filter(|cp| active_tracks.contains(&cp.track_number))
+                    .cloned()
+                    .collect();
+                if filtered.is_empty() { None } else { Some(filtered) }
+            });
 
-            let cluster_map = cluster::build_cluster_map(
-                &mut self.reader,
-                first_cluster,
-                self.metadata.layout.segment_data_end,
-            )?;
-
-            self.source = MkvBlockSource::ClusterScan {
-                cluster_map,
-                cluster_index: 0,
-            };
+            if let Some(cue_points) = filtered_cues {
+                self.source = MkvBlockSource::Cues {
+                    cue_points,
+                    index: 0,
+                    cluster_header_cache: HashMap::new(),
+                    visited_clusters: HashSet::new(),
+                };
+                return Ok(());
+            }
         }
+
+        // Sequential: reopen with a large buffer for linear throughput.
+        const SEQ_BUF_SIZE: usize = 2 * 1024 * 1024; // 2 MB
+        let file = File::open(&self.path)?;
+        self.reader = SeekBufReader::with_capacity(SEQ_BUF_SIZE, file);
+
+        self.source = MkvBlockSource::SequentialScan {
+            current_position: first_cluster,
+            segment_data_end: self.metadata.layout.segment_data_end,
+        };
 
         Ok(())
     }
@@ -160,7 +170,7 @@ impl MkvExtractorState {
     /// Advance the state machine to produce the next display set.
     pub(crate) fn next_display_set(&mut self) -> Option<Result<TrackDisplaySet, PgsError>> {
         // Lazy initialization: deferred from open() so track metadata is
-        // available immediately without waiting for cluster map building.
+        // available immediately without waiting for I/O strategy setup.
         if matches!(self.source, MkvBlockSource::Uninitialized) {
             if let Err(e) = self.init_source() {
                 self.source = MkvBlockSource::Done;
@@ -214,24 +224,63 @@ impl MkvExtractorState {
                 Ok(true)
             }
 
-            MkvBlockSource::ClusterScan { cluster_map, cluster_index } => {
-                if *cluster_index >= cluster_map.len() {
-                    self.source = MkvBlockSource::Done;
-                    return Ok(false);
+            MkvBlockSource::SequentialScan { current_position, segment_data_end } => {
+                let end = *segment_data_end;
+
+                loop {
+                    if *current_position >= end {
+                        self.source = MkvBlockSource::Done;
+                        return Ok(false);
+                    }
+
+                    // Ensure reader is at the right position (first iteration
+                    // needs a seek; subsequent ones are already there).
+                    if self.reader.position() != *current_position {
+                        self.reader.seek_to(*current_position)?;
+                    }
+
+                    let id = match read_element_id(&mut self.reader) {
+                        Ok(id) => id,
+                        Err(_) => {
+                            self.source = MkvBlockSource::Done;
+                            return Ok(false);
+                        }
+                    };
+                    let size = match read_element_size(&mut self.reader) {
+                        Ok(s) => s,
+                        Err(_) => {
+                            self.source = MkvBlockSource::Done;
+                            return Ok(false);
+                        }
+                    };
+                    let data_start = self.reader.position();
+
+                    if size.value == u64::MAX {
+                        // Unknown-size element — can't determine length.
+                        self.source = MkvBlockSource::Done;
+                        return Ok(false);
+                    }
+
+                    let element_end = data_start + size.value;
+
+                    if id.value == ids::CLUSTER {
+                        // Process this cluster with fully sequential I/O.
+                        let blocks = cluster::scan_cluster_for_pgs_sequential(
+                            &mut self.reader,
+                            data_start,
+                            size.value,
+                            &active_tracks,
+                        )?;
+
+                        *current_position = element_end;
+                        self.process_blocks(blocks);
+                        return Ok(true);
+                    }
+
+                    // Not a cluster — drain (read through) to keep I/O sequential.
+                    self.reader.drain(size.value)?;
+                    *current_position = element_end;
                 }
-
-                let entry = cluster_map[*cluster_index].clone();
-                *cluster_index += 1;
-
-                let blocks = cluster::scan_cluster_for_pgs(
-                    &mut self.reader,
-                    entry.data_start,
-                    entry.data_size,
-                    &active_tracks,
-                )?;
-
-                self.process_blocks(blocks);
-                Ok(true)
             }
 
             MkvBlockSource::Uninitialized => unreachable!("init_source not called"),

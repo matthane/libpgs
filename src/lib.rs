@@ -26,6 +26,20 @@ pub enum ContainerFormat {
     Sup,
 }
 
+/// MKV extraction strategy override.
+///
+/// Controls how the extractor navigates Clusters in an MKV file.
+/// Used for benchmarking and tuning NAS performance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MkvStrategy {
+    /// Automatic: use Cues if available, otherwise Sequential.
+    #[default]
+    Auto,
+    /// Single-pass linear scan through the Segment, processing Clusters
+    /// as they're encountered without building a map first.
+    Sequential,
+}
+
 /// Metadata about a PGS track found in the container.
 #[derive(Debug, Clone)]
 pub struct PgsTrackInfo {
@@ -137,6 +151,7 @@ pub struct Extractor {
     stats: ExtractionStats,
     path: PathBuf,
     format: ContainerFormat,
+    mkv_strategy: MkvStrategy,
 }
 
 impl Extractor {
@@ -165,6 +180,7 @@ impl Extractor {
                     path.to_path_buf(),
                     meta,
                     None,
+                    MkvStrategy::Auto,
                 )?;
 
                 Ok(Extractor {
@@ -174,6 +190,7 @@ impl Extractor {
                     stats: ExtractionStats { file_size, bytes_read: 0 },
                     path: path.to_path_buf(),
                     format: ContainerFormat::Matroska,
+                    mkv_strategy: MkvStrategy::Auto,
                 })
             }
             format @ (ContainerFormat::M2ts | ContainerFormat::TransportStream) => {
@@ -196,6 +213,7 @@ impl Extractor {
                     stats: ExtractionStats { file_size, bytes_read: 0 },
                     path: path.to_path_buf(),
                     format,
+                    mkv_strategy: MkvStrategy::Auto,
                 })
             }
             ContainerFormat::Sup => {
@@ -209,7 +227,29 @@ impl Extractor {
                     stats: ExtractionStats { file_size, bytes_read: 0 },
                     path: path.to_path_buf(),
                     format: ContainerFormat::Sup,
+                    mkv_strategy: MkvStrategy::Auto,
                 })
+            }
+        }
+    }
+
+    /// Override the MKV extraction strategy. Chainable.
+    ///
+    /// Must be called before the first call to `next()`. Only affects MKV files.
+    /// Useful for benchmarking different strategies on NAS storage.
+    pub fn with_mkv_strategy(mut self, strategy: MkvStrategy) -> Self {
+        if self.format != ContainerFormat::Matroska || strategy == self.mkv_strategy {
+            return self;
+        }
+
+        let path = self.path.clone();
+        let file_size = self.stats.file_size;
+
+        match Self::open_with_strategy(&path, file_size, strategy, None) {
+            Ok(ext) => ext,
+            Err(_) => {
+                self.mkv_strategy = strategy;
+                self
             }
         }
     }
@@ -235,14 +275,57 @@ impl Extractor {
         let path = self.path.clone();
         let file_size = self.stats.file_size;
         let format = self.format;
+        let mkv_strategy = self.mkv_strategy;
 
         // Reconstruct with the filter applied. Reopens the file and
         // re-parses metadata so the state machine is initialized with
         // only the requested tracks from the start.
-        match Self::open_filtered(&path, file_size, format, track_ids) {
+        match Self::open_filtered(&path, file_size, format, track_ids, mkv_strategy) {
             Ok(ext) => ext,
             Err(_) => self,
         }
+    }
+
+    /// Open an MKV file with a specific strategy (no track filter).
+    fn open_with_strategy(
+        path: &Path,
+        file_size: u64,
+        strategy: MkvStrategy,
+        track_ids: Option<&[u32]>,
+    ) -> Result<Self, PgsError> {
+        let file = File::open(path)?;
+        let mut reader = SeekBufReader::new(file);
+        detect_format(&mut reader)?;
+
+        let meta = mkv::prepare_mkv_metadata(&mut reader)?;
+        let tracks: Vec<PgsTrackInfo> = if let Some(ids) = track_ids {
+            meta.pgs_tracks.iter()
+                .filter(|t| ids.contains(&(t.track_number as u32)))
+                .map(|t| mkv_track_to_info(t, &meta.frame_counts, &meta.cue_points))
+                .collect()
+        } else {
+            meta.pgs_tracks.iter()
+                .map(|t| mkv_track_to_info(t, &meta.frame_counts, &meta.cue_points))
+                .collect()
+        };
+
+        let state = MkvExtractorState::new(
+            reader,
+            path.to_path_buf(),
+            meta,
+            track_ids,
+            strategy,
+        )?;
+
+        Ok(Extractor {
+            inner: ExtractorInner::Mkv(state),
+            catalog: Vec::new(),
+            tracks,
+            stats: ExtractionStats { file_size, bytes_read: 0 },
+            path: path.to_path_buf(),
+            format: ContainerFormat::Matroska,
+            mkv_strategy: strategy,
+        })
     }
 
     fn open_filtered(
@@ -250,34 +333,11 @@ impl Extractor {
         file_size: u64,
         format: ContainerFormat,
         track_ids: &[u32],
+        mkv_strategy: MkvStrategy,
     ) -> Result<Self, PgsError> {
         match format {
             ContainerFormat::Matroska => {
-                let file = File::open(path)?;
-                let mut reader = SeekBufReader::new(file);
-                detect_format(&mut reader)?;
-
-                let meta = mkv::prepare_mkv_metadata(&mut reader)?;
-                let tracks: Vec<PgsTrackInfo> = meta.pgs_tracks.iter()
-                    .filter(|t| track_ids.contains(&(t.track_number as u32)))
-                    .map(|t| mkv_track_to_info(t, &meta.frame_counts, &meta.cue_points))
-                    .collect();
-
-                let state = MkvExtractorState::new(
-                    reader,
-                    path.to_path_buf(),
-                    meta,
-                    Some(track_ids),
-                )?;
-
-                Ok(Extractor {
-                    inner: ExtractorInner::Mkv(state),
-                    catalog: Vec::new(),
-                    tracks,
-                    stats: ExtractionStats { file_size, bytes_read: 0 },
-                    path: path.to_path_buf(),
-                    format: ContainerFormat::Matroska,
-                })
+                Self::open_with_strategy(path, file_size, mkv_strategy, Some(track_ids))
             }
             fmt @ (ContainerFormat::M2ts | ContainerFormat::TransportStream) => {
                 let file = File::open(path)?;
@@ -299,6 +359,7 @@ impl Extractor {
                     stats: ExtractionStats { file_size, bytes_read: 0 },
                     path: path.to_path_buf(),
                     format: fmt,
+                    mkv_strategy: MkvStrategy::Auto,
                 })
             }
             ContainerFormat::Sup => {
@@ -310,6 +371,7 @@ impl Extractor {
                         stats: ExtractionStats { file_size, bytes_read: 0 },
                         path: path.to_path_buf(),
                         format: ContainerFormat::Sup,
+                        mkv_strategy: MkvStrategy::Auto,
                     });
                 }
 
@@ -327,6 +389,7 @@ impl Extractor {
                     stats: ExtractionStats { file_size, bytes_read: 0 },
                     path: path.to_path_buf(),
                     format: ContainerFormat::Sup,
+                    mkv_strategy: MkvStrategy::Auto,
                 })
             }
         }

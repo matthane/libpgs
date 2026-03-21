@@ -143,6 +143,44 @@ impl<R: Read + Seek> SeekBufReader<R> {
         Ok(buf)
     }
 
+    /// Read and discard `n` bytes without seeking.
+    ///
+    /// Unlike `skip()`, this actually reads through the bytes, keeping the
+    /// underlying I/O sequential. Essential for NAS throughput where seeks
+    /// kill read-ahead caching.
+    pub fn drain(&mut self, n: u64) -> io::Result<()> {
+        let mut remaining = n;
+
+        // First consume whatever is in the buffer.
+        let buffered = self.inner.buffer().len() as u64;
+        if buffered > 0 {
+            let consume = remaining.min(buffered);
+            self.inner.consume(consume as usize);
+            self.pos += consume;
+            self.bytes_read += consume;
+            remaining -= consume;
+        }
+
+        // Read through the rest in chunks using the BufReader's internal buffer.
+        // We use fill_buf + consume to avoid allocating a separate buffer.
+        while remaining > 0 {
+            let buf = self.inner.fill_buf()?;
+            if buf.is_empty() {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "unexpected EOF during drain",
+                ));
+            }
+            let consume = (remaining as usize).min(buf.len());
+            self.inner.consume(consume);
+            self.pos += consume as u64;
+            self.bytes_read += consume as u64;
+            remaining -= consume as u64;
+        }
+
+        Ok(())
+    }
+
     /// Get the file size by seeking to the end and back.
     pub fn file_size(&mut self) -> io::Result<u64> {
         let current = self.pos;

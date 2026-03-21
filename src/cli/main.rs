@@ -95,22 +95,66 @@ fn cmd_tracks(args: &[String]) -> Result<(), libpgs::error::PgsError> {
 
 fn cmd_bench(args: &[String]) -> Result<(), libpgs::error::PgsError> {
     if args.is_empty() {
-        eprintln!("Usage: libpgs bench <file>");
+        eprintln!("Usage: libpgs bench <file> [--strategy auto|sequential]");
         process::exit(1);
     }
 
     let path = PathBuf::from(&args[0]);
+
+    let mut strategy = libpgs::MkvStrategy::Auto;
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--strategy" | "-s" => {
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("Missing value for --strategy");
+                    process::exit(1);
+                }
+                strategy = match args[i].as_str() {
+                    "auto" => libpgs::MkvStrategy::Auto,
+                    "sequential" => libpgs::MkvStrategy::Sequential,
+                    other => {
+                        eprintln!("Unknown strategy: {other} (use auto, sequential)");
+                        process::exit(1);
+                    }
+                };
+            }
+            other => {
+                eprintln!("Unknown option: {other}");
+                process::exit(1);
+            }
+        }
+        i += 1;
+    }
+
+    let strategy_name = match strategy {
+        libpgs::MkvStrategy::Auto => "auto",
+        libpgs::MkvStrategy::Sequential => "sequential",
+    };
+
     let start = Instant::now();
 
-    let (track_results, stats) = libpgs::extract_all_display_sets_with_stats(&path)?;
+    let mut extractor = libpgs::Extractor::open(&path)?;
+    if strategy != libpgs::MkvStrategy::Auto {
+        extractor = extractor.with_mkv_strategy(strategy);
+    }
+
+    let track_info: Vec<_> = extractor.tracks().to_vec();
+    let results: Vec<_> = extractor.by_ref().collect::<Result<Vec<_>, _>>()?;
+    let stats = extractor.stats().clone();
     let elapsed = start.elapsed();
 
-    let total_display_sets: usize = track_results.iter().map(|t| t.display_sets.len()).sum();
-    let total_segments: usize = track_results
-        .iter()
-        .flat_map(|t| &t.display_sets)
-        .map(|ds| ds.segments.len())
-        .sum();
+    // Group results by track for display.
+    let mut track_ds_counts: std::collections::HashMap<u32, (usize, usize)> = std::collections::HashMap::new();
+    for tds in &results {
+        let entry = track_ds_counts.entry(tds.track_id).or_insert((0, 0));
+        entry.0 += 1;
+        entry.1 += tds.display_set.segments.len();
+    }
+
+    let total_display_sets = results.len();
+    let total_segments: usize = results.iter().map(|tds| tds.display_set.segments.len()).sum();
     let ratio = if stats.file_size > 0 {
         (stats.bytes_read as f64 / stats.file_size as f64) * 100.0
     } else {
@@ -118,6 +162,7 @@ fn cmd_bench(args: &[String]) -> Result<(), libpgs::error::PgsError> {
     };
 
     println!("File:          {}", path.display());
+    println!("Strategy:      {}", strategy_name);
     println!(
         "File size:     {} ({:.2} MB)",
         stats.file_size,
@@ -129,17 +174,15 @@ fn cmd_bench(args: &[String]) -> Result<(), libpgs::error::PgsError> {
         stats.bytes_read as f64 / (1024.0 * 1024.0)
     );
     println!("Read ratio:    {:.2}%", ratio);
-    println!("Tracks:        {}", track_results.len());
-    for t in &track_results {
-        let lang = t.track.language.as_deref().unwrap_or("unknown");
-        let segs: usize = t.display_sets.iter().map(|ds| ds.segments.len()).sum();
-        println!(
-            "  Track {} ({}): {} display sets, {} segments",
-            t.track.track_id,
-            lang,
-            t.display_sets.len(),
-            segs
-        );
+    println!("Tracks:        {}", track_info.len());
+    for t in &track_info {
+        let lang = t.language.as_deref().unwrap_or("unknown");
+        if let Some(&(ds_count, seg_count)) = track_ds_counts.get(&t.track_id) {
+            println!(
+                "  Track {} ({}): {} display sets, {} segments",
+                t.track_id, lang, ds_count, seg_count
+            );
+        }
     }
     println!("Total:         {} display sets, {} segments", total_display_sets, total_segments);
     println!("Time:          {:.3}s", elapsed.as_secs_f64());

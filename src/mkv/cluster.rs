@@ -16,125 +16,6 @@ pub struct PgsBlock {
     pub data: Vec<u8>,
 }
 
-/// Position and size of a Cluster within the Segment.
-#[derive(Debug, Clone)]
-pub struct ClusterEntry {
-    /// Absolute byte position of the Cluster element (including ID + size).
-    pub position: u64,
-    /// Total size of the Cluster element (ID + size VINT + data).
-    pub total_size: u64,
-    /// Absolute position of the Cluster's data (after ID + size VINT).
-    pub data_start: u64,
-    /// Size of the Cluster's data only.
-    pub data_size: u64,
-}
-
-/// Build a map of all Clusters by scanning top-level Segment children.
-///
-/// This reads only element headers (ID + size), seeking past each element.
-/// Used by the probe-based scan path.
-///
-/// If EBML parsing hits corruption, scans forward for the next Cluster element ID
-/// (0x1F43B675) and resumes. This allows recovery from localized corruption
-/// without losing all Clusters that follow the damaged region.
-pub fn build_cluster_map<R: Read + Seek>(
-    reader: &mut SeekBufReader<R>,
-    first_cluster_position: u64,
-    segment_data_end: u64,
-) -> Result<Vec<ClusterEntry>, PgsError> {
-    let mut clusters = Vec::new();
-    reader.seek_to(first_cluster_position)?;
-
-    while reader.position() < segment_data_end {
-        let elem_pos = reader.position();
-        let id = match read_element_id(reader) {
-            Ok(id) => id,
-            Err(_) => {
-                // Corruption — scan forward for the next Cluster ID.
-                reader.seek_to(elem_pos + 1)?;
-                match scan_for_next_cluster(reader, segment_data_end)? {
-                    Some(_) => continue,
-                    None => break,
-                }
-            }
-        };
-        let size = match read_element_size(reader) {
-            Ok(s) => s,
-            Err(_) => {
-                reader.seek_to(elem_pos + 1)?;
-                match scan_for_next_cluster(reader, segment_data_end)? {
-                    Some(_) => continue,
-                    None => break,
-                }
-            }
-        };
-        let data_start = reader.position();
-
-        if size.value == u64::MAX {
-            // Unknown-size element — scan for the next Cluster.
-            match scan_for_next_cluster(reader, segment_data_end)? {
-                Some(_) => continue,
-                None => break,
-            }
-        }
-
-        if id.value == ids::CLUSTER {
-            let header_size = data_start - elem_pos;
-            clusters.push(ClusterEntry {
-                position: elem_pos,
-                total_size: header_size + size.value,
-                data_start,
-                data_size: size.value,
-            });
-        }
-
-        // Skip to the next top-level element.
-        reader.skip(size.value)?;
-    }
-
-    Ok(clusters)
-}
-
-/// Scan forward from the current position for the next Cluster element ID (0x1F43B675).
-///
-/// Reads in 8 KB chunks, checking for the 4-byte Cluster magic pattern.
-/// Overlaps chunks by 3 bytes to handle patterns split across boundaries.
-/// Leaves the reader positioned at the start of the found Cluster ID.
-fn scan_for_next_cluster<R: Read + Seek>(
-    reader: &mut SeekBufReader<R>,
-    limit: u64,
-) -> Result<Option<u64>, PgsError> {
-    const CLUSTER_MAGIC: [u8; 4] = [0x1F, 0x43, 0xB6, 0x75];
-    const SCAN_CHUNK: usize = 8 * 1024;
-
-    while reader.position() + 4 <= limit {
-        let chunk_start = reader.position();
-        let to_read = SCAN_CHUNK.min((limit - chunk_start) as usize);
-        if to_read < 4 {
-            break;
-        }
-
-        let buf = match reader.read_bytes(to_read) {
-            Ok(buf) => buf,
-            Err(_) => break,
-        };
-
-        for i in 0..buf.len() - 3 {
-            if buf[i..i + 4] == CLUSTER_MAGIC {
-                let found = chunk_start + i as u64;
-                reader.seek_to(found)?;
-                return Ok(Some(found));
-            }
-        }
-
-        // Overlap by 3 bytes to handle patterns split across chunk boundaries.
-        let rewind = 3u64.min(buf.len() as u64);
-        reader.seek_to(chunk_start + buf.len() as u64 - rewind)?;
-    }
-
-    Ok(None)
-}
-
 /// Scan a single Cluster and extract all PGS blocks for the given tracks.
 ///
 /// The reader should be positioned at the start of the Cluster's data
@@ -145,7 +26,32 @@ pub fn scan_cluster_for_pgs<R: Read + Seek>(
     cluster_data_size: u64,
     pgs_track_numbers: &[u64],
 ) -> Result<Vec<PgsBlock>, PgsError> {
-    reader.seek_to(cluster_data_start)?;
+    scan_cluster_inner(reader, cluster_data_start, cluster_data_size, pgs_track_numbers, false)
+}
+
+/// Scan a single Cluster with fully sequential I/O (no seeks).
+///
+/// Like `scan_cluster_for_pgs`, but reads through non-PGS data instead of
+/// seeking past it. Keeps I/O fully sequential for NAS throughput.
+pub fn scan_cluster_for_pgs_sequential<R: Read + Seek>(
+    reader: &mut SeekBufReader<R>,
+    cluster_data_start: u64,
+    cluster_data_size: u64,
+    pgs_track_numbers: &[u64],
+) -> Result<Vec<PgsBlock>, PgsError> {
+    scan_cluster_inner(reader, cluster_data_start, cluster_data_size, pgs_track_numbers, true)
+}
+
+fn scan_cluster_inner<R: Read + Seek>(
+    reader: &mut SeekBufReader<R>,
+    cluster_data_start: u64,
+    cluster_data_size: u64,
+    pgs_track_numbers: &[u64],
+    sequential: bool,
+) -> Result<Vec<PgsBlock>, PgsError> {
+    if !sequential {
+        reader.seek_to(cluster_data_start)?;
+    }
     let cluster_end = cluster_data_start + cluster_data_size;
 
     let mut cluster_timestamp: i64 = 0;
@@ -173,6 +79,7 @@ pub fn scan_cluster_for_pgs<R: Read + Seek>(
                     cluster_timestamp,
                     pgs_track_numbers,
                     &mut pgs_blocks,
+                    sequential,
                 )?;
             }
             ids::BLOCK_GROUP => {
@@ -183,10 +90,11 @@ pub fn scan_cluster_for_pgs<R: Read + Seek>(
                     cluster_timestamp,
                     pgs_track_numbers,
                     &mut pgs_blocks,
+                    sequential,
                 )?;
             }
             _ => {
-                reader.skip(child_size.value)?;
+                skip_or_drain(reader, child_size.value, sequential)?;
             }
         }
     }
@@ -194,14 +102,30 @@ pub fn scan_cluster_for_pgs<R: Read + Seek>(
     Ok(pgs_blocks)
 }
 
+/// Skip or drain bytes depending on sequential mode.
+#[inline]
+fn skip_or_drain<R: Read + Seek>(
+    reader: &mut SeekBufReader<R>,
+    n: u64,
+    sequential: bool,
+) -> Result<(), PgsError> {
+    if sequential {
+        reader.drain(n)?;
+    } else {
+        reader.skip(n)?;
+    }
+    Ok(())
+}
+
 /// Check a SimpleBlock: read its track number, and if it matches any PGS track, read the payload.
-/// Otherwise, seek past it.
+/// Otherwise, skip (or drain) the remaining payload.
 fn extract_pgs_from_block<R: Read + Seek>(
     reader: &mut SeekBufReader<R>,
     block_size: u64,
     cluster_timestamp: i64,
     pgs_track_numbers: &[u64],
     pgs_blocks: &mut Vec<PgsBlock>,
+    sequential: bool,
 ) -> Result<(), PgsError> {
     let block_start = reader.position();
     let block_end = block_start + block_size;
@@ -209,9 +133,9 @@ fn extract_pgs_from_block<R: Read + Seek>(
     let header = block::read_block_header(reader)?;
 
     if !pgs_track_numbers.contains(&header.track_number) {
-        // Not a PGS track — skip the remaining payload.
+        // Not a PGS track — skip/drain the remaining payload.
         let remaining = block_end - reader.position();
-        reader.skip(remaining)?;
+        skip_or_drain(reader, remaining, sequential)?;
         return Ok(());
     }
 
@@ -236,6 +160,7 @@ fn extract_pgs_from_block_group<R: Read + Seek>(
     cluster_timestamp: i64,
     pgs_track_numbers: &[u64],
     pgs_blocks: &mut Vec<PgsBlock>,
+    sequential: bool,
 ) -> Result<(), PgsError> {
     let end = data_start + data_size;
 
@@ -256,9 +181,10 @@ fn extract_pgs_from_block_group<R: Read + Seek>(
                 cluster_timestamp,
                 pgs_track_numbers,
                 pgs_blocks,
+                sequential,
             )?;
         } else {
-            reader.skip(child_size.value)?;
+            skip_or_drain(reader, child_size.value, sequential)?;
         }
     }
 
