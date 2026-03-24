@@ -21,6 +21,8 @@ pub(crate) struct M2tsExtractorState {
     pending: VecDeque<TrackDisplaySet>,
     flushed: bool,
     container: ContainerFormat,
+    /// Presentation start time offset to subtract from PTS/DTS (90 kHz ticks).
+    pts_offset: u64,
 }
 
 impl M2tsExtractorState {
@@ -81,6 +83,7 @@ impl M2tsExtractorState {
             pending: VecDeque::new(),
             flushed: false,
             container,
+            pts_offset: metadata.pts_offset,
         }
     }
 
@@ -193,7 +196,9 @@ impl M2tsExtractorState {
                     && !payload.is_empty()
                 {
                     let segments = pes_asm.push(header.pusi, payload);
-                    for seg in segments {
+                    for mut seg in segments {
+                        seg.pts = seg.pts.saturating_sub(self.pts_offset);
+                        seg.dts = seg.dts.saturating_sub(self.pts_offset);
                         if let Some(ds) = ds_asm.push(seg)
                             && let Some(info) = self.track_info.get(&pid)
                         {
@@ -225,7 +230,9 @@ impl M2tsExtractorState {
         let pids: Vec<u16> = self.pid_state.keys().copied().collect();
         for pid in pids {
             if let Some((pes_asm, ds_asm)) = self.pid_state.get_mut(&pid) {
-                for seg in pes_asm.flush() {
+                for mut seg in pes_asm.flush() {
+                    seg.pts = seg.pts.saturating_sub(self.pts_offset);
+                    seg.dts = seg.dts.saturating_sub(self.pts_offset);
                     if let Some(ds) = ds_asm.push(seg)
                         && let Some(info) = self.track_info.get(&pid)
                     {

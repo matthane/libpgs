@@ -24,6 +24,10 @@ pub(crate) struct M2tsMetadata {
     pub tracks: Vec<M2tsPgsTrack>,
     pub pgs_pids: Vec<u16>,
     pub file_size: u64,
+    /// Presentation start time from CLPI SequenceInfo (90 kHz ticks).
+    /// Subtracted from PGS timestamps to normalize them to stream-relative values.
+    /// Zero when no CLPI is available (no adjustment).
+    pub pts_offset: u64,
 }
 
 /// Parse all M2TS metadata needed for PGS extraction.
@@ -46,11 +50,17 @@ pub(crate) fn prepare_m2ts_metadata<R: Read + Seek>(
     let pgs_pids: Vec<u16> = tracks.iter().map(|t| t.pid).collect();
     let file_size = reader.file_size()?;
 
+    // Extract presentation start time from CLPI for timestamp normalization.
+    let pts_offset = m2ts_path
+        .and_then(clpi::clpi_presentation_start_time)
+        .unwrap_or(0);
+
     Ok(M2tsMetadata {
         format,
         tracks,
         pgs_pids,
         file_size,
+        pts_offset,
     })
 }
 
@@ -204,11 +214,12 @@ mod tests {
         data
     }
 
-    /// Write stream data to a temp file and create an M2tsExtractorState.
-    fn make_extractor(
+    /// Write stream data to a temp file and create an M2tsExtractorState with a custom PTS offset.
+    fn make_extractor_with_offset(
         data: &[u8],
         pids: &[u16],
         track_filter: Option<&[u32]>,
+        pts_offset: u64,
     ) -> stream::M2tsExtractorState {
         let dir = std::env::temp_dir();
         let path = dir.join(format!("libpgs_test_{}.ts", std::process::id()));
@@ -231,6 +242,7 @@ mod tests {
                 .collect(),
             pgs_pids: pids.to_vec(),
             file_size: data.len() as u64,
+            pts_offset,
         };
 
         let ext = stream::M2tsExtractorState::new(
@@ -244,6 +256,15 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         ext
+    }
+
+    /// Write stream data to a temp file and create an M2tsExtractorState.
+    fn make_extractor(
+        data: &[u8],
+        pids: &[u16],
+        track_filter: Option<&[u32]>,
+    ) -> stream::M2tsExtractorState {
+        make_extractor_with_offset(data, pids, track_filter, 0)
     }
 
     /// Drain all display sets from an extractor.
@@ -288,5 +309,36 @@ mod tests {
         let results = drain(&mut ext);
 
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_streaming_pts_offset_subtraction() {
+        let data = build_multi_pid_stream();
+        let offset = 10000u64;
+        let mut ext =
+            make_extractor_with_offset(&data, &[0x1100, 0x1101], None, offset);
+        let results = drain(&mut ext);
+
+        assert_eq!(results.len(), 2);
+
+        let ds_a = results.iter().find(|r| r.track_id == 0x1100).unwrap();
+        assert_eq!(ds_a.display_set.pts, 90000 - offset);
+
+        let ds_b = results.iter().find(|r| r.track_id == 0x1101).unwrap();
+        assert_eq!(ds_b.display_set.pts, 180000 - offset);
+    }
+
+    #[test]
+    fn test_streaming_pts_offset_saturating() {
+        let data = build_multi_pid_stream();
+        // Offset larger than PTS=90000 — should clamp to 0, not wrap.
+        let offset = 100_000u64;
+        let mut ext =
+            make_extractor_with_offset(&data, &[0x1100], None, offset);
+        let results = drain(&mut ext);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].display_set.pts, 0);
+        assert_eq!(results[0].display_set.pts_ms, 0.0);
     }
 }
