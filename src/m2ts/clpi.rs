@@ -13,6 +13,8 @@ const PGS_CODING_TYPE: u8 = 0x90;
 const PGS_TEXT_CODING_TYPE: u8 = 0x91;
 /// Expected magic bytes at the start of a CLPI file.
 const CLPI_MAGIC: &[u8; 4] = b"HDMV";
+/// Byte offset where the SequenceInfo start address is stored (u32 BE).
+const SEQUENCE_INFO_OFFSET_POS: usize = 8;
 /// Byte offset where the ProgramInfo start address is stored (u32 BE).
 const PROGRAM_INFO_OFFSET_POS: usize = 12;
 /// Minimum valid CLPI file size (header + at least one offset table entry).
@@ -33,6 +35,81 @@ pub(crate) fn clpi_language_map(m2ts_path: &Path) -> HashMap<u16, String> {
     };
 
     parse_clpi_file(&data).unwrap_or_default()
+}
+
+/// Attempt to find and parse a CLPI file corresponding to an M2TS file
+/// to extract the presentation start time from the SequenceInfo section.
+///
+/// Returns the presentation_start_time in 90 kHz ticks (same units as PTS),
+/// or `None` if the CLPI file is unavailable or the field cannot be parsed.
+pub(crate) fn clpi_presentation_start_time(m2ts_path: &Path) -> Option<u64> {
+    let clpi_path = resolve_clpi_path(m2ts_path)?;
+    let data = std::fs::read(&clpi_path).ok()?;
+    parse_sequence_info_start_time(&data)
+}
+
+/// Parse the SequenceInfo section of a CLPI file to extract presentation_start_time.
+///
+/// Layout (from the BD spec):
+///   CLPI header bytes 8..12: SequenceInfo section offset (u32 BE)
+///   SequenceInfo section:
+///     [0..4]   u32 length
+///     [4]      reserved
+///     [5]      num_atc_sequences
+///     Per ATC sequence:
+///       [+0..4]  u32 spn_atc_start
+///       [+4]     u8  num_stc_sequences
+///       [+5]     u8  offset_stc_id
+///       Per STC sequence:
+///         [+0..2]  u16 pcr_pid
+///         [+2..6]  u32 spn_stc_start
+///         [+6..10] u32 presentation_start_time (90 kHz ticks)
+///         [+10..14] u32 presentation_end_time
+fn parse_sequence_info_start_time(data: &[u8]) -> Option<u64> {
+    if data.len() < MIN_CLPI_SIZE {
+        return None;
+    }
+    if &data[0..4] != CLPI_MAGIC {
+        return None;
+    }
+
+    let seq_info_offset = read_u32_be(data, SEQUENCE_INFO_OFFSET_POS)? as usize;
+    if seq_info_offset == 0 || seq_info_offset >= data.len() {
+        return None;
+    }
+
+    let section = &data[seq_info_offset..];
+    // Need at least: length(4) + reserved(1) + num_atc(1) + atc_header(6) + stc_entry(14)
+    if section.len() < 26 {
+        return None;
+    }
+
+    // Skip length(4) + reserved(1).
+    let num_atc = section[5] as usize;
+    if num_atc == 0 {
+        return None;
+    }
+
+    // First ATC sequence starts at offset 6.
+    let atc_pos = 6;
+    // spn_atc_start(4) + num_stc_sequences(1) + offset_stc_id(1) = 6 bytes
+    if atc_pos + 6 > section.len() {
+        return None;
+    }
+    let num_stc = section[atc_pos + 4] as usize;
+    if num_stc == 0 {
+        return None;
+    }
+
+    // First STC sequence starts at atc_pos + 6.
+    let stc_pos = atc_pos + 6;
+    // pcr_pid(2) + spn_stc_start(4) + presentation_start_time(4) = 10 bytes minimum
+    if stc_pos + 10 > section.len() {
+        return None;
+    }
+
+    let presentation_start_time = read_u32_be(section, stc_pos + 6)? as u64;
+    Some(presentation_start_time)
 }
 
 /// Resolve the CLPI path from an M2TS path.
@@ -402,5 +479,93 @@ mod tests {
     fn test_clpi_language_map_nonexistent() {
         let map = clpi_language_map(Path::new("/nonexistent/BDMV/STREAM/00001.m2ts"));
         assert!(map.is_empty());
+    }
+
+    /// Build a minimal CLPI binary with a SequenceInfo section containing
+    /// the given presentation_start_time.
+    fn build_clpi_with_sequence_info(presentation_start_time: u32) -> Vec<u8> {
+        let mut data = Vec::new();
+
+        // Header: magic + version (8 bytes)
+        data.extend_from_slice(b"HDMV0300");
+
+        // Offset table:
+        // [8]  SequenceInfo offset — we'll put it at byte 40
+        // [12] ProgramInfo offset (0 = not present)
+        // [16..] other offsets
+        data.extend_from_slice(&40u32.to_be_bytes()); // [8] SequenceInfo → offset 40
+        data.extend_from_slice(&0u32.to_be_bytes()); // [12] ProgramInfo
+        data.extend_from_slice(&0u32.to_be_bytes()); // [16]
+        data.extend_from_slice(&0u32.to_be_bytes()); // [20]
+        data.extend_from_slice(&0u32.to_be_bytes()); // [24]
+        data.extend_from_slice(&0u32.to_be_bytes()); // [28]
+        data.extend_from_slice(&0u32.to_be_bytes()); // [32]
+        data.extend_from_slice(&0u32.to_be_bytes()); // [36]
+
+        // SequenceInfo section at offset 40:
+        assert_eq!(data.len(), 40);
+
+        // length(4) + reserved(1) + num_atc_sequences(1) = 6 bytes header
+        // ATC seq: spn_atc_start(4) + num_stc(1) + offset_stc_id(1) = 6 bytes
+        // STC seq: pcr_pid(2) + spn_stc_start(4) + start_time(4) + end_time(4) = 14 bytes
+        let section_len: u32 = 2 + 6 + 14; // content after length field
+        data.extend_from_slice(&section_len.to_be_bytes()); // length
+        data.push(0x00); // reserved
+        data.push(0x01); // 1 ATC sequence
+
+        // ATC sequence:
+        data.extend_from_slice(&0u32.to_be_bytes()); // spn_atc_start
+        data.push(0x01); // 1 STC sequence
+        data.push(0x00); // offset_stc_id
+
+        // STC sequence:
+        data.extend_from_slice(&0x1001u16.to_be_bytes()); // pcr_pid
+        data.extend_from_slice(&0u32.to_be_bytes()); // spn_stc_start
+        data.extend_from_slice(&presentation_start_time.to_be_bytes()); // presentation_start_time
+        data.extend_from_slice(&0u32.to_be_bytes()); // presentation_end_time
+
+        data
+    }
+
+    #[test]
+    fn test_parse_sequence_info_start_time() {
+        // 54000000 ticks at 90kHz = 600 seconds = 10 minutes (typical BD offset)
+        let data = build_clpi_with_sequence_info(54_000_000);
+        let result = parse_sequence_info_start_time(&data);
+        assert_eq!(result, Some(54_000_000));
+    }
+
+    #[test]
+    fn test_parse_sequence_info_zero_offset() {
+        let data = build_clpi_with_sequence_info(0);
+        let result = parse_sequence_info_start_time(&data);
+        assert_eq!(result, Some(0));
+    }
+
+    #[test]
+    fn test_parse_sequence_info_no_section() {
+        // Build CLPI with SequenceInfo offset = 0 (no section).
+        let mut data = Vec::new();
+        data.extend_from_slice(b"HDMV0300");
+        data.extend_from_slice(&0u32.to_be_bytes()); // [8] SequenceInfo = 0
+        while data.len() < MIN_CLPI_SIZE {
+            data.push(0);
+        }
+        assert_eq!(parse_sequence_info_start_time(&data), None);
+    }
+
+    #[test]
+    fn test_parse_sequence_info_bad_magic() {
+        let mut data = build_clpi_with_sequence_info(90000);
+        data[0..4].copy_from_slice(b"XXXX");
+        assert_eq!(parse_sequence_info_start_time(&data), None);
+    }
+
+    #[test]
+    fn test_parse_sequence_info_no_atc_sequences() {
+        let mut data = build_clpi_with_sequence_info(90000);
+        // Set num_atc_sequences to 0 at offset 40 + 5.
+        data[45] = 0;
+        assert_eq!(parse_sequence_info_start_time(&data), None);
     }
 }
