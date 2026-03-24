@@ -95,15 +95,14 @@ mod tests {
     #[test]
     fn test_parse_pat_section() {
         let data = [
-            0x00,       // table_id
+            0x00, // table_id
             0xB0, 0x0D, // section_syntax=1, section_length=13
             0x00, 0x01, // transport_stream_id
-            0xC1,       // reserved, version=0, current=1
-            0x00,       // section_number
-            0x00,       // last_section_number
+            0xC1, // reserved, version=0, current=1
+            0x00, // section_number
+            0x00, // last_section_number
             // Entry: program_number=1, PMT_PID=0x100
-            0x00, 0x01, 0xE1, 0x00,
-            // CRC32 (not validated)
+            0x00, 0x01, 0xE1, 0x00, // CRC32 (not validated)
             0x00, 0x00, 0x00, 0x00,
         ];
 
@@ -116,17 +115,10 @@ mod tests {
     #[test]
     fn test_parse_pat_skips_nit() {
         let data = [
-            0x00,
-            0xB0, 0x11, // section_length=17
-            0x00, 0x01,
-            0xC1,
-            0x00,
-            0x00,
-            // NIT entry: program_number=0, PID=0x10
-            0x00, 0x00, 0xE0, 0x10,
-            // Program entry: program_number=1, PMT_PID=0x100
-            0x00, 0x01, 0xE1, 0x00,
-            // CRC32
+            0x00, 0xB0, 0x11, // section_length=17
+            0x00, 0x01, 0xC1, 0x00, 0x00, // NIT entry: program_number=0, PID=0x10
+            0x00, 0x00, 0xE0, 0x10, // Program entry: program_number=1, PMT_PID=0x100
+            0x00, 0x01, 0xE1, 0x00, // CRC32
             0x00, 0x00, 0x00, 0x00,
         ];
 

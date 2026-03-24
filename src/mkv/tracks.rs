@@ -129,8 +129,8 @@ fn parse_track_entry<R: Read + Seek>(
     }
 
     // Check if this is a PGS subtitle track.
-    let is_pgs = track_type == Some(TRACK_TYPE_SUBTITLE)
-        && codec_id.as_deref() == Some(PGS_CODEC_ID);
+    let is_pgs =
+        track_type == Some(TRACK_TYPE_SUBTITLE) && codec_id.as_deref() == Some(PGS_CODEC_ID);
 
     if is_pgs {
         let track_number = track_number
@@ -168,7 +168,8 @@ fn parse_content_encodings<R: Read + Seek>(
         let child_size = read_element_size(reader)?;
 
         if child_id.value == ids::CONTENT_ENCODING {
-            if let Some(algo) = parse_content_encoding(reader, reader.position(), child_size.value)? {
+            if let Some(algo) = parse_content_encoding(reader, reader.position(), child_size.value)?
+            {
                 return Ok(Some(algo));
             }
         } else {

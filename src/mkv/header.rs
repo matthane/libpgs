@@ -23,12 +23,15 @@ pub struct SegmentLayout {
 }
 
 /// Validate EBML header and return the DocType.
-pub fn parse_ebml_header<R: Read + Seek>(reader: &mut SeekBufReader<R>) -> Result<String, PgsError> {
+pub fn parse_ebml_header<R: Read + Seek>(
+    reader: &mut SeekBufReader<R>,
+) -> Result<String, PgsError> {
     let id = read_element_id(reader)?;
     if id.value != ids::EBML {
         return Err(PgsError::InvalidEbml(format!(
             "expected EBML header (0x{:X}), got 0x{:X}",
-            ids::EBML, id.value
+            ids::EBML,
+            id.value
         )));
     }
 
@@ -53,7 +56,9 @@ pub fn parse_ebml_header<R: Read + Seek>(reader: &mut SeekBufReader<R>) -> Resul
     }
 
     if doc_type != "matroska" && doc_type != "webm" {
-        return Err(PgsError::InvalidEbml(format!("unsupported DocType: {doc_type}")));
+        return Err(PgsError::InvalidEbml(format!(
+            "unsupported DocType: {doc_type}"
+        )));
     }
 
     Ok(doc_type)
@@ -63,12 +68,15 @@ pub fn parse_ebml_header<R: Read + Seek>(reader: &mut SeekBufReader<R>) -> Resul
 ///
 /// After this call, the reader is positioned somewhere within the Segment.
 /// Use the returned `SegmentLayout` to seek to specific elements.
-pub fn parse_segment<R: Read + Seek>(reader: &mut SeekBufReader<R>) -> Result<SegmentLayout, PgsError> {
+pub fn parse_segment<R: Read + Seek>(
+    reader: &mut SeekBufReader<R>,
+) -> Result<SegmentLayout, PgsError> {
     let id = read_element_id(reader)?;
     if id.value != ids::SEGMENT {
         return Err(PgsError::InvalidMkv(format!(
             "expected Segment (0x{:X}), got 0x{:X}",
-            ids::SEGMENT, id.value
+            ids::SEGMENT,
+            id.value
         )));
     }
 

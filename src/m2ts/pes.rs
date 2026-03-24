@@ -9,6 +9,12 @@ pub struct PesReassembler {
     has_data: bool,
 }
 
+impl Default for PesReassembler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PesReassembler {
     pub fn new() -> Self {
         Self {

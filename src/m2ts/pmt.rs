@@ -135,20 +135,18 @@ mod tests {
     #[test]
     fn test_parse_pmt_section_with_pgs() {
         let data = [
-            0x02,       // table_id
+            0x02, // table_id
             0xB0, 0x18, // section_syntax=1, section_length=24
             0x00, 0x01, // program_number
-            0xC1,       // reserved, version=0, current=1
-            0x00,       // section_number
-            0x00,       // last_section_number
+            0xC1, // reserved, version=0, current=1
+            0x00, // section_number
+            0x00, // last_section_number
             0xE0, 0x41, // reserved + PCR_PID
             0xF0, 0x00, // reserved + program_info_length=0
             // ES: stream_type=0x90 (PGS), PID=0x1200
-            0x90, 0xF2, 0x00,
-            0xF0, 0x06, // ES_info_length=6
+            0x90, 0xF2, 0x00, 0xF0, 0x06, // ES_info_length=6
             // Language descriptor: tag=0x0A, length=4, "eng" + audio_type=0
-            0x0A, 0x04, 0x65, 0x6E, 0x67, 0x00,
-            // CRC32
+            0x0A, 0x04, 0x65, 0x6E, 0x67, 0x00, // CRC32
             0x00, 0x00, 0x00, 0x00,
         ];
 
@@ -162,10 +160,26 @@ mod tests {
     #[test]
     fn test_find_pgs_streams() {
         let streams = vec![
-            PmtStream { stream_type: 0x1B, elementary_pid: 0x1011, language: None },
-            PmtStream { stream_type: 0x90, elementary_pid: 0x1200, language: Some("eng".into()) },
-            PmtStream { stream_type: 0x81, elementary_pid: 0x1100, language: None },
-            PmtStream { stream_type: 0x90, elementary_pid: 0x1201, language: Some("fre".into()) },
+            PmtStream {
+                stream_type: 0x1B,
+                elementary_pid: 0x1011,
+                language: None,
+            },
+            PmtStream {
+                stream_type: 0x90,
+                elementary_pid: 0x1200,
+                language: Some("eng".into()),
+            },
+            PmtStream {
+                stream_type: 0x81,
+                elementary_pid: 0x1100,
+                language: None,
+            },
+            PmtStream {
+                stream_type: 0x90,
+                elementary_pid: 0x1201,
+                language: Some("fre".into()),
+            },
         ];
         let pgs = find_pgs_streams(&streams);
         assert_eq!(pgs.len(), 2);
@@ -176,17 +190,10 @@ mod tests {
     #[test]
     fn test_parse_pmt_no_descriptors() {
         let data = [
-            0x02,
-            0xB0, 0x12, // section_length=18
-            0x00, 0x01,
-            0xC1,
-            0x00,
-            0x00,
-            0xE0, 0x41,
-            0xF0, 0x00, // program_info_length=0
+            0x02, 0xB0, 0x12, // section_length=18
+            0x00, 0x01, 0xC1, 0x00, 0x00, 0xE0, 0x41, 0xF0, 0x00, // program_info_length=0
             // ES: stream_type=0x90, PID=0x1200, no descriptors
-            0x90, 0xF2, 0x00,
-            0xF0, 0x00, // ES_info_length=0
+            0x90, 0xF2, 0x00, 0xF0, 0x00, // ES_info_length=0
             // CRC32
             0x00, 0x00, 0x00, 0x00,
         ];

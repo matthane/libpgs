@@ -1,7 +1,7 @@
 use crate::error::PgsError;
 use crate::io::SeekBufReader;
-use crate::pgs::segment::{PGS_MAGIC, HEADER_SIZE, PgsSegment, SegmentType};
 use crate::pgs::DisplaySetAssembler;
+use crate::pgs::segment::{HEADER_SIZE, PGS_MAGIC, PgsSegment, SegmentType};
 use crate::{ContainerFormat, TrackDisplaySet};
 use std::fs::File;
 
@@ -47,12 +47,10 @@ impl SupExtractorState {
             // Validate PG magic bytes.
             if header[0] != PGS_MAGIC[0] || header[1] != PGS_MAGIC[1] {
                 self.done = true;
-                return Some(Err(PgsError::InvalidPgs(
-                    format!(
-                        "expected PG magic (0x{:02X}{:02X}), got 0x{:02X}{:02X}",
-                        PGS_MAGIC[0], PGS_MAGIC[1], header[0], header[1],
-                    ),
-                )));
+                return Some(Err(PgsError::InvalidPgs(format!(
+                    "expected PG magic (0x{:02X}{:02X}), got 0x{:02X}{:02X}",
+                    PGS_MAGIC[0], PGS_MAGIC[1], header[0], header[1],
+                ))));
             }
 
             // Parse header fields directly (avoids concatenating into a buffer).
@@ -63,9 +61,10 @@ impl SupExtractorState {
                 Some(t) => t,
                 None => {
                     self.done = true;
-                    return Some(Err(PgsError::InvalidPgs(
-                        format!("unknown segment type 0x{:02X}", header[10]),
-                    )));
+                    return Some(Err(PgsError::InvalidPgs(format!(
+                        "unknown segment type 0x{:02X}",
+                        header[10]
+                    ))));
                 }
             };
 
@@ -84,7 +83,12 @@ impl SupExtractorState {
                 Vec::new()
             };
 
-            let segment = PgsSegment { pts, dts, segment_type, payload };
+            let segment = PgsSegment {
+                pts,
+                dts,
+                segment_type,
+                payload,
+            };
 
             // Push into assembler — yields a DisplaySet when END closes a set.
             if let Some(ds) = self.assembler.push(segment) {
@@ -121,12 +125,12 @@ mod tests {
             payload: vec![
                 0x07, 0x80, // width: 1920
                 0x04, 0x38, // height: 1080
-                0x10,       // frame rate
+                0x10, // frame rate
                 0x00, 0x01, // composition number
-                0x80,       // composition state: Epoch Start
-                0x00,       // palette update: false
-                0x00,       // palette id
-                0x00,       // num composition objects: 0
+                0x80, // composition state: Epoch Start
+                0x00, // palette update: false
+                0x00, // palette id
+                0x00, // num composition objects: 0
             ],
         };
         let end = PgsSegment {
@@ -150,7 +154,8 @@ mod tests {
         let reader = SeekBufReader::new(file);
         let mut state = SupExtractorState::new(reader);
 
-        let tds = state.next_display_set()
+        let tds = state
+            .next_display_set()
             .expect("should yield a display set")
             .expect("should be Ok");
         assert_eq!(tds.track_id, 0);
@@ -172,9 +177,8 @@ mod tests {
             dts: 0,
             segment_type: SegmentType::PresentationComposition,
             payload: vec![
-                0x07, 0x80, 0x04, 0x38, 0x10,
-                0x00, 0x02, // composition number: 2
-                0x00,       // composition state: Normal
+                0x07, 0x80, 0x04, 0x38, 0x10, 0x00, 0x02, // composition number: 2
+                0x00, // composition state: Normal
                 0x00, 0x00, 0x00,
             ],
         };

@@ -26,7 +26,13 @@ pub fn scan_cluster_for_pgs<R: Read + Seek>(
     cluster_data_size: u64,
     pgs_track_numbers: &[u64],
 ) -> Result<Vec<PgsBlock>, PgsError> {
-    scan_cluster_inner(reader, cluster_data_start, cluster_data_size, pgs_track_numbers, false)
+    scan_cluster_inner(
+        reader,
+        cluster_data_start,
+        cluster_data_size,
+        pgs_track_numbers,
+        false,
+    )
 }
 
 /// Scan a single Cluster with fully sequential I/O (no seeks).
@@ -39,7 +45,13 @@ pub fn scan_cluster_for_pgs_sequential<R: Read + Seek>(
     cluster_data_size: u64,
     pgs_track_numbers: &[u64],
 ) -> Result<Vec<PgsBlock>, PgsError> {
-    scan_cluster_inner(reader, cluster_data_start, cluster_data_size, pgs_track_numbers, true)
+    scan_cluster_inner(
+        reader,
+        cluster_data_start,
+        cluster_data_size,
+        pgs_track_numbers,
+        true,
+    )
 }
 
 fn scan_cluster_inner<R: Read + Seek>(
@@ -329,12 +341,12 @@ mod tests {
         seg.extend_from_slice(&[
             0x07, 0x80, // width: 1920
             0x04, 0x38, // height: 1080
-            0x10,       // frame rate
+            0x10, // frame rate
             0x00, 0x01, // composition number
-            0x80,       // composition state: Epoch Start
-            0x00,       // palette update: false
-            0x00,       // palette id
-            0x00,       // num composition objects: 0
+            0x80, // composition state: Epoch Start
+            0x00, // palette update: false
+            0x00, // palette id
+            0x00, // num composition objects: 0
         ]);
         seg
     }
@@ -431,5 +443,4 @@ mod tests {
         let blocks = scan_cluster_for_pgs(&mut reader, 0, data_len, &[99]).unwrap();
         assert!(blocks.is_empty());
     }
-
 }

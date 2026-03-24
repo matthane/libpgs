@@ -1,6 +1,6 @@
 pub mod vint;
 
-pub use vint::{read_element_id, read_element_size, read_track_number, Vint};
+pub use vint::{Vint, read_element_id, read_element_size, read_track_number};
 
 // Well-known EBML/Matroska element IDs.
 pub mod ids {

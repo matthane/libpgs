@@ -15,5 +15,3 @@ path = "src/cli/main.rs"
 
 [dependencies]
 flate2 = "1"
-
-[dev-dependencies]

@@ -123,7 +123,7 @@ impl<R: Read + Seek> SeekBufReader<R> {
     /// Read an unsigned integer of `n` bytes (1-8) in big-endian order.
     #[inline]
     pub fn read_uint_be(&mut self, n: usize) -> io::Result<u64> {
-        debug_assert!(n >= 1 && n <= 8);
+        debug_assert!((1..=8).contains(&n));
         let mut buf = [0u8; 8];
         self.read_exact(&mut buf[8 - n..])?;
         Ok(u64::from_be_bytes(buf))

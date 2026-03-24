@@ -136,7 +136,10 @@ fn parse_clpi_file(data: &[u8]) -> Result<HashMap<u16, String>, ()> {
 }
 
 /// Parse program sequences starting from the given count_offset within the section.
-fn parse_program_info_sequences(section: &[u8], count_offset: usize) -> Option<HashMap<u16, String>> {
+fn parse_program_info_sequences(
+    section: &[u8],
+    count_offset: usize,
+) -> Option<HashMap<u16, String>> {
     if count_offset >= section.len() {
         return None;
     }
@@ -221,11 +224,7 @@ fn parse_program_info_sequences(section: &[u8], count_offset: usize) -> Option<H
         }
     }
 
-    if map.is_empty() {
-        None
-    } else {
-        Some(map)
-    }
+    if map.is_empty() { None } else { Some(map) }
 }
 
 #[cfg(test)]
@@ -245,10 +244,7 @@ mod tests {
 
         let bdmv_dir = stream_dir.parent().unwrap();
         let expected = bdmv_dir.join("CLIPINF").join("00001.clpi");
-        assert_eq!(
-            expected,
-            Path::new("/media/disc/BDMV/CLIPINF/00001.clpi")
-        );
+        assert_eq!(expected, Path::new("/media/disc/BDMV/CLIPINF/00001.clpi"));
     }
 
     #[test]

@@ -54,8 +54,7 @@ impl DisplaySetAssembler {
                     let ds = DisplaySet {
                         pts: self.current_pts,
                         pts_ms: self.current_pts as f64 / 90.0,
-                        composition_state: self.current_state
-                            .unwrap_or(CompositionState::Normal),
+                        composition_state: self.current_state.unwrap_or(CompositionState::Normal),
                         segments: std::mem::take(&mut self.current_segments),
                     };
                     self.current_state = None;
@@ -99,12 +98,12 @@ mod tests {
             payload = vec![
                 0x07, 0x80, // width: 1920
                 0x04, 0x38, // height: 1080
-                0x10,       // frame rate
+                0x10, // frame rate
                 0x00, 0x01, // composition number
-                0x80,       // composition state: Epoch Start
-                0x00,       // palette update: false
-                0x00,       // palette id
-                0x00,       // num composition objects: 0
+                0x80, // composition state: Epoch Start
+                0x00, // palette update: false
+                0x00, // palette id
+                0x00, // num composition objects: 0
             ];
         }
         PgsSegment {
@@ -119,10 +118,22 @@ mod tests {
     fn test_assemble_complete_display_set() {
         let mut asm = DisplaySetAssembler::new();
 
-        assert!(asm.push(make_segment(SegmentType::PresentationComposition, 90000)).is_none());
-        assert!(asm.push(make_segment(SegmentType::WindowDefinition, 90000)).is_none());
-        assert!(asm.push(make_segment(SegmentType::PaletteDefinition, 90000)).is_none());
-        assert!(asm.push(make_segment(SegmentType::ObjectDefinition, 90000)).is_none());
+        assert!(
+            asm.push(make_segment(SegmentType::PresentationComposition, 90000))
+                .is_none()
+        );
+        assert!(
+            asm.push(make_segment(SegmentType::WindowDefinition, 90000))
+                .is_none()
+        );
+        assert!(
+            asm.push(make_segment(SegmentType::PaletteDefinition, 90000))
+                .is_none()
+        );
+        assert!(
+            asm.push(make_segment(SegmentType::ObjectDefinition, 90000))
+                .is_none()
+        );
 
         let ds = asm.push(make_segment(SegmentType::EndOfDisplaySet, 90000));
         assert!(ds.is_some());
@@ -136,7 +147,10 @@ mod tests {
     #[test]
     fn test_end_without_pcs_is_discarded() {
         let mut asm = DisplaySetAssembler::new();
-        assert!(asm.push(make_segment(SegmentType::EndOfDisplaySet, 90000)).is_none());
+        assert!(
+            asm.push(make_segment(SegmentType::EndOfDisplaySet, 90000))
+                .is_none()
+        );
     }
 
     #[test]
