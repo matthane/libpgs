@@ -21,7 +21,11 @@ const FIXTURES: &[&str] = &[
 ];
 
 fn available_fixtures() -> Vec<&'static str> {
-    FIXTURES.iter().copied().filter(|p| Path::new(p).exists()).collect()
+    FIXTURES
+        .iter()
+        .copied()
+        .filter(|p| Path::new(p).exists())
+        .collect()
 }
 
 /// Minimal JSON value parser — just enough for our NDJSON schema.
@@ -129,7 +133,10 @@ fn parse_string(b: &[u8], i: usize) -> (JsonValue, usize) {
                 b'n' => s.push('\n'),
                 b'r' => s.push('\r'),
                 b't' => s.push('\t'),
-                _ => { s.push('\\'); s.push(b[j] as char); }
+                _ => {
+                    s.push('\\');
+                    s.push(b[j] as char);
+                }
             }
         } else {
             s.push(b[j] as char);
@@ -141,7 +148,14 @@ fn parse_string(b: &[u8], i: usize) -> (JsonValue, usize) {
 
 fn parse_number(b: &[u8], i: usize) -> (JsonValue, usize) {
     let mut j = i;
-    while j < b.len() && (b[j].is_ascii_digit() || b[j] == b'.' || b[j] == b'-' || b[j] == b'e' || b[j] == b'E' || b[j] == b'+') {
+    while j < b.len()
+        && (b[j].is_ascii_digit()
+            || b[j] == b'.'
+            || b[j] == b'-'
+            || b[j] == b'e'
+            || b[j] == b'E'
+            || b[j] == b'+')
+    {
         j += 1;
     }
     let s = std::str::from_utf8(&b[i..j]).unwrap();
@@ -273,20 +287,29 @@ fn run_stream(fixture: &str, track_filter: Option<u32>) -> Vec<String> {
     );
 
     let stdout = String::from_utf8(output.stdout).expect("invalid UTF-8");
-    stdout.lines().filter(|l| !l.is_empty()).map(String::from).collect()
+    stdout
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(String::from)
+        .collect()
 }
 
 #[test]
 fn ndjson_tracks_header_matches_api() {
     let fixtures = available_fixtures();
-    if fixtures.is_empty() { return; }
+    if fixtures.is_empty() {
+        return;
+    }
 
     for fixture in fixtures {
-        let api_tracks = libpgs::list_pgs_tracks(Path::new(fixture))
-            .expect("list_pgs_tracks should succeed");
+        let api_tracks =
+            libpgs::list_pgs_tracks(Path::new(fixture)).expect("list_pgs_tracks should succeed");
 
         let lines = run_stream(fixture, None);
-        assert!(!lines.is_empty(), "{fixture}: no output from stream command");
+        assert!(
+            !lines.is_empty(),
+            "{fixture}: no output from stream command"
+        );
 
         let header = parse_json(&lines[0]);
         assert_eq!(header.get("type").unwrap().as_str().unwrap(), "tracks");
@@ -317,36 +340,60 @@ fn ndjson_tracks_header_matches_api() {
             // Verify new metadata fields are present and match API.
             let json_name = jt.get("name").unwrap();
             match &at.name {
-                Some(name) => assert_eq!(json_name.as_str().unwrap(), name.as_str(),
-                    "{fixture}: name mismatch"),
+                Some(name) => assert_eq!(
+                    json_name.as_str().unwrap(),
+                    name.as_str(),
+                    "{fixture}: name mismatch"
+                ),
                 None => assert!(json_name.is_null(), "{fixture}: expected null name"),
             }
 
             let json_default = jt.get("flag_default").unwrap();
             match at.flag_default {
-                Some(v) => assert_eq!(json_default.as_bool().unwrap(), v,
-                    "{fixture}: flag_default mismatch"),
-                None => assert!(json_default.is_null(), "{fixture}: expected null flag_default"),
+                Some(v) => assert_eq!(
+                    json_default.as_bool().unwrap(),
+                    v,
+                    "{fixture}: flag_default mismatch"
+                ),
+                None => assert!(
+                    json_default.is_null(),
+                    "{fixture}: expected null flag_default"
+                ),
             }
 
             let json_forced = jt.get("flag_forced").unwrap();
             match at.flag_forced {
-                Some(v) => assert_eq!(json_forced.as_bool().unwrap(), v,
-                    "{fixture}: flag_forced mismatch"),
-                None => assert!(json_forced.is_null(), "{fixture}: expected null flag_forced"),
+                Some(v) => assert_eq!(
+                    json_forced.as_bool().unwrap(),
+                    v,
+                    "{fixture}: flag_forced mismatch"
+                ),
+                None => assert!(
+                    json_forced.is_null(),
+                    "{fixture}: expected null flag_forced"
+                ),
             }
 
             let json_count = jt.get("display_set_count").unwrap();
             match at.display_set_count {
-                Some(v) => assert_eq!(json_count.as_u64().unwrap(), v,
-                    "{fixture}: display_set_count mismatch"),
-                None => assert!(json_count.is_null(), "{fixture}: expected null display_set_count"),
+                Some(v) => assert_eq!(
+                    json_count.as_u64().unwrap(),
+                    v,
+                    "{fixture}: display_set_count mismatch"
+                ),
+                None => assert!(
+                    json_count.is_null(),
+                    "{fixture}: expected null display_set_count"
+                ),
             }
 
             let json_has_cues = jt.get("has_cues").unwrap();
             match at.has_cues {
-                Some(v) => assert_eq!(json_has_cues.as_bool().unwrap(), v,
-                    "{fixture}: has_cues mismatch"),
+                Some(v) => assert_eq!(
+                    json_has_cues.as_bool().unwrap(),
+                    v,
+                    "{fixture}: has_cues mismatch"
+                ),
                 None => assert!(json_has_cues.is_null(), "{fixture}: expected null has_cues"),
             }
         }
@@ -356,7 +403,9 @@ fn ndjson_tracks_header_matches_api() {
 #[test]
 fn ndjson_display_sets_match_batch_extraction() {
     let fixtures = available_fixtures();
-    if fixtures.is_empty() { return; }
+    if fixtures.is_empty() {
+        return;
+    }
 
     for fixture in fixtures {
         let batch = libpgs::extract_all_display_sets(Path::new(fixture))
@@ -381,7 +430,10 @@ fn ndjson_display_sets_match_batch_extraction() {
         // Build per-track lookup keyed by (track_id, pts) for order-independent matching.
         // The streaming API may yield display sets in a different order than batch
         // (e.g., interleaved by container position vs. grouped by track).
-        let mut batch_by_key: HashMap<(u32, u64), (&libpgs::PgsTrackInfo, &libpgs::pgs::display_set::DisplaySet)> = HashMap::new();
+        let mut batch_by_key: HashMap<
+            (u32, u64),
+            (&libpgs::PgsTrackInfo, &libpgs::pgs::display_set::DisplaySet),
+        > = HashMap::new();
         for t in &batch {
             for ds in &t.display_sets {
                 batch_by_key.insert((t.track.track_id, ds.pts as u64), (&t.track, ds));
@@ -398,21 +450,27 @@ fn ndjson_display_sets_match_batch_extraction() {
             let tid = json.get("track_id").unwrap().as_u64().unwrap() as u32;
             let pts = json.get("pts").unwrap().as_u64().unwrap();
             let key = (tid, pts);
-            let &(_track, ds) = batch_by_key
-                .get(&key)
-                .unwrap_or_else(|| panic!("{fixture} line {i}: no batch match for track={tid} pts={pts}"));
+            let &(_track, ds) = batch_by_key.get(&key).unwrap_or_else(|| {
+                panic!("{fixture} line {i}: no batch match for track={tid} pts={pts}")
+            });
 
             // Verify display_set lines do not carry language/container (slimmed format).
-            assert!(json.get("language").is_none(),
-                "{fixture} line {i}: display_set should not contain language");
-            assert!(json.get("container").is_none(),
-                "{fixture} line {i}: display_set should not contain container");
+            assert!(
+                json.get("language").is_none(),
+                "{fixture} line {i}: display_set should not contain language"
+            );
+            assert!(
+                json.get("container").is_none(),
+                "{fixture} line {i}: display_set should not contain container"
+            );
 
             // Verify index field is present and sequential per track.
             let json_index = json.get("index").unwrap().as_u64().unwrap();
             let expected_index = track_index_counters.entry(tid).or_insert(0);
-            assert_eq!(json_index, *expected_index,
-                "{fixture} line {i}: index mismatch for track {tid}");
+            assert_eq!(
+                json_index, *expected_index,
+                "{fixture} line {i}: index mismatch for track {tid}"
+            );
             *expected_index += 1;
 
             assert_eq!(
@@ -484,12 +542,16 @@ fn ndjson_display_sets_match_batch_extraction() {
 #[test]
 fn ndjson_track_filter_matches_api() {
     let fixtures = available_fixtures();
-    if fixtures.is_empty() { return; }
+    if fixtures.is_empty() {
+        return;
+    }
 
     for fixture in fixtures {
         let batch = libpgs::extract_all_display_sets(Path::new(fixture))
             .expect("batch extraction should succeed");
-        if batch.is_empty() { continue; }
+        if batch.is_empty() {
+            continue;
+        }
 
         let target = &batch[0];
         let tid = target.track.track_id;
@@ -499,8 +561,15 @@ fn ndjson_track_filter_matches_api() {
         let json_tracks = header.get("tracks").unwrap().as_array().unwrap();
 
         // Track header should only contain the filtered track.
-        assert_eq!(json_tracks.len(), 1, "{fixture}: expected 1 track in filtered output");
-        assert_eq!(json_tracks[0].get("track_id").unwrap().as_u64().unwrap(), tid as u64);
+        assert_eq!(
+            json_tracks.len(),
+            1,
+            "{fixture}: expected 1 track in filtered output"
+        );
+        assert_eq!(
+            json_tracks[0].get("track_id").unwrap().as_u64().unwrap(),
+            tid as u64
+        );
 
         // Display set count should match.
         let ds_lines = &lines[1..];

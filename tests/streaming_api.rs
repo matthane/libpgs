@@ -4,9 +4,9 @@
 //! Fixture files are expected in `tests/fixtures/` but are not tracked in git.
 //! Tests are skipped at runtime if the fixtures are not present.
 
+use libpgs::pgs::segment::SegmentType;
 use std::collections::HashMap;
 use std::path::Path;
-use libpgs::pgs::segment::SegmentType;
 
 const FIXTURES: &[&str] = &[
     "tests/fixtures/matroska-with-cues.mkv",
@@ -18,19 +18,24 @@ const FIXTURES: &[&str] = &[
 
 /// Returns only the fixture paths that exist on disk.
 fn available_fixtures() -> Vec<&'static str> {
-    FIXTURES.iter().copied().filter(|p| Path::new(p).exists()).collect()
+    FIXTURES
+        .iter()
+        .copied()
+        .filter(|p| Path::new(p).exists())
+        .collect()
 }
 
 /// Batch extraction baseline — used to compare against streaming results.
 fn batch_baseline(path: &str) -> Vec<libpgs::TrackDisplaySets> {
-    libpgs::extract_all_display_sets(Path::new(path))
-        .expect("batch extraction should succeed")
+    libpgs::extract_all_display_sets(Path::new(path)).expect("batch extraction should succeed")
 }
 
 #[test]
 fn streaming_yields_all_display_sets() {
     let fixtures = available_fixtures();
-    if fixtures.is_empty() { return; }
+    if fixtures.is_empty() {
+        return;
+    }
 
     for fixture in fixtures {
         let batch = batch_baseline(fixture);
@@ -70,7 +75,9 @@ fn streaming_yields_all_display_sets() {
 #[test]
 fn streaming_segments_match_batch() {
     let fixtures = available_fixtures();
-    if fixtures.is_empty() { return; }
+    if fixtures.is_empty() {
+        return;
+    }
 
     for fixture in fixtures {
         let batch = batch_baseline(fixture);
@@ -85,7 +92,10 @@ fn streaming_segments_match_batch() {
 
         for bt in &batch {
             let batch_segs: usize = bt.display_sets.iter().map(|ds| ds.segments.len()).sum();
-            let stream_segs = stream_segments.get(&bt.track.track_id).copied().unwrap_or(0);
+            let stream_segs = stream_segments
+                .get(&bt.track.track_id)
+                .copied()
+                .unwrap_or(0);
             assert_eq!(
                 stream_segs, batch_segs,
                 "{fixture}: track {} segment mismatch: streaming={stream_segs}, batch={batch_segs}",
@@ -98,7 +108,9 @@ fn streaming_segments_match_batch() {
 #[test]
 fn history_accumulates_correctly() {
     let fixtures = available_fixtures();
-    if fixtures.is_empty() { return; }
+    if fixtures.is_empty() {
+        return;
+    }
 
     for fixture in fixtures {
         let mut extractor = libpgs::Extractor::open(fixture).expect("open");
@@ -119,14 +131,19 @@ fn history_accumulates_correctly() {
         for &tid in &track_ids {
             sum += extractor.history_for_track(tid).len();
         }
-        assert_eq!(sum, total, "{fixture}: sum of per-track history != total history");
+        assert_eq!(
+            sum, total,
+            "{fixture}: sum of per-track history != total history"
+        );
     }
 }
 
 #[test]
 fn drain_history_clears_and_returns() {
     let fixtures = available_fixtures();
-    if fixtures.is_empty() { return; }
+    if fixtures.is_empty() {
+        return;
+    }
 
     for fixture in fixtures {
         let mut extractor = libpgs::Extractor::open(fixture).expect("open");
@@ -140,7 +157,10 @@ fn drain_history_clears_and_returns() {
         // Drain and verify.
         let drained = extractor.drain_history();
         assert_eq!(drained.len(), 10);
-        assert!(extractor.history().is_empty(), "history should be empty after drain");
+        assert!(
+            extractor.history().is_empty(),
+            "history should be empty after drain"
+        );
 
         // Continue streaming — new items should accumulate fresh.
         let mut remaining = 0usize;
@@ -155,13 +175,19 @@ fn drain_history_clears_and_returns() {
 #[test]
 fn early_termination_with_take() {
     let fixtures = available_fixtures();
-    if fixtures.is_empty() { return; }
+    if fixtures.is_empty() {
+        return;
+    }
 
     for fixture in fixtures {
         let mut extractor = libpgs::Extractor::open(fixture).expect("open");
 
         // Take only the first 5 display sets.
-        let first_five: Vec<_> = extractor.by_ref().take(5).collect::<Result<Vec<_>, _>>().expect("Ok");
+        let first_five: Vec<_> = extractor
+            .by_ref()
+            .take(5)
+            .collect::<Result<Vec<_>, _>>()
+            .expect("Ok");
         assert_eq!(first_five.len(), 5);
 
         // Stats should show partial read — less than a full extraction.
@@ -176,7 +202,9 @@ fn early_termination_with_take() {
 #[test]
 fn track_filter_restricts_output() {
     let fixtures = available_fixtures();
-    if fixtures.is_empty() { return; }
+    if fixtures.is_empty() {
+        return;
+    }
 
     for fixture in fixtures {
         let batch = batch_baseline(fixture);
@@ -198,15 +226,24 @@ fn track_filter_restricts_output() {
         }
 
         let batch_segs: usize = target.display_sets.iter().map(|ds| ds.segments.len()).sum();
-        assert_eq!(count, target.display_sets.len(), "{fixture}: display set count mismatch for filtered track");
-        assert_eq!(seg_count, batch_segs, "{fixture}: segment count mismatch for filtered track");
+        assert_eq!(
+            count,
+            target.display_sets.len(),
+            "{fixture}: display set count mismatch for filtered track"
+        );
+        assert_eq!(
+            seg_count, batch_segs,
+            "{fixture}: segment count mismatch for filtered track"
+        );
     }
 }
 
 #[test]
 fn stats_update_during_streaming() {
     let fixtures = available_fixtures();
-    if fixtures.is_empty() { return; }
+    if fixtures.is_empty() {
+        return;
+    }
 
     for fixture in fixtures {
         let mut extractor = libpgs::Extractor::open(fixture).expect("open");
@@ -226,21 +263,17 @@ fn stats_update_during_streaming() {
             result.expect("Ok");
         }
         let final_bytes = extractor.stats().bytes_read;
-        assert!(
-            final_bytes >= after_one,
-            "bytes_read should not decrease"
-        );
-        assert!(
-            extractor.stats().file_size > 0,
-            "file_size should be set"
-        );
+        assert!(final_bytes >= after_one, "bytes_read should not decrease");
+        assert!(extractor.stats().file_size > 0, "file_size should be set");
     }
 }
 
 #[test]
 fn collect_by_track_matches_batch() {
     let fixtures = available_fixtures();
-    if fixtures.is_empty() { return; }
+    if fixtures.is_empty() {
+        return;
+    }
 
     for fixture in fixtures {
         let batch = batch_baseline(fixture);
@@ -249,7 +282,11 @@ fn collect_by_track_matches_batch() {
             .collect_by_track()
             .expect("collect_by_track should succeed");
 
-        assert_eq!(collected.len(), batch.len(), "{fixture}: track count mismatch");
+        assert_eq!(
+            collected.len(),
+            batch.len(),
+            "{fixture}: track count mismatch"
+        );
 
         let batch_map: HashMap<u32, usize> = batch
             .iter()
@@ -273,7 +310,9 @@ fn collect_by_track_matches_batch() {
 #[test]
 fn extraction_summary() {
     let fixtures = available_fixtures();
-    if fixtures.is_empty() { return; }
+    if fixtures.is_empty() {
+        return;
+    }
 
     for fixture in fixtures {
         let (by_track, stats) = libpgs::extract_all_display_sets_with_stats(Path::new(fixture))
@@ -281,8 +320,12 @@ fn extraction_summary() {
 
         println!("\n============================================================");
         println!("  {fixture}");
-        println!("  File size: {:.2} MB", stats.file_size as f64 / 1_048_576.0);
-        println!("  Bytes read: {:.2} MB ({:.1}%)",
+        println!(
+            "  File size: {:.2} MB",
+            stats.file_size as f64 / 1_048_576.0
+        );
+        println!(
+            "  Bytes read: {:.2} MB ({:.1}%)",
             stats.bytes_read as f64 / 1_048_576.0,
             stats.bytes_read as f64 / stats.file_size as f64 * 100.0,
         );
@@ -297,7 +340,11 @@ fn extraction_summary() {
             total_ds += ds_count;
             total_segs += seg_count;
 
-            let first_pts = track.display_sets.first().map(|ds| ds.pts_ms).unwrap_or(0.0);
+            let first_pts = track
+                .display_sets
+                .first()
+                .map(|ds| ds.pts_ms)
+                .unwrap_or(0.0);
             let last_pts = track.display_sets.last().map(|ds| ds.pts_ms).unwrap_or(0.0);
 
             let mut seg_types: HashMap<&str, usize> = HashMap::new();
@@ -319,7 +366,8 @@ fn extraction_summary() {
             println!("    Display sets: {ds_count}");
             println!("    Segments: {seg_count}");
             println!("    PTS range: {first_pts:.3}ms - {last_pts:.3}ms");
-            println!("    Segment types: PCS={} WDS={} PDS={} ODS={} END={}",
+            println!(
+                "    Segment types: PCS={} WDS={} PDS={} ODS={} END={}",
                 seg_types.get("PCS").unwrap_or(&0),
                 seg_types.get("WDS").unwrap_or(&0),
                 seg_types.get("PDS").unwrap_or(&0),
@@ -336,7 +384,9 @@ fn extraction_summary() {
 #[test]
 fn all_fixtures_produce_same_totals() {
     let fixtures = available_fixtures();
-    if fixtures.len() < 2 { return; }
+    if fixtures.len() < 2 {
+        return;
+    }
 
     // Collect totals per fixture: (display sets, segments, track count, per-track ds counts sorted)
     let mut results: Vec<(&str, usize, usize, usize, Vec<usize>)> = Vec::new();
@@ -345,12 +395,16 @@ fn all_fixtures_produce_same_totals() {
         let by_track = batch_baseline(fixture);
         let track_count = by_track.len();
         let total_ds: usize = by_track.iter().map(|t| t.display_sets.len()).sum();
-        let total_segs: usize = by_track.iter()
-            .map(|t| t.display_sets.iter().map(|ds| ds.segments.len()).sum::<usize>())
+        let total_segs: usize = by_track
+            .iter()
+            .map(|t| {
+                t.display_sets
+                    .iter()
+                    .map(|ds| ds.segments.len())
+                    .sum::<usize>()
+            })
             .sum();
-        let mut per_track: Vec<usize> = by_track.iter()
-            .map(|t| t.display_sets.len())
-            .collect();
+        let mut per_track: Vec<usize> = by_track.iter().map(|t| t.display_sets.len()).collect();
         per_track.sort();
 
         results.push((fixture, total_ds, total_segs, track_count, per_track));
@@ -382,7 +436,9 @@ fn all_fixtures_produce_same_totals() {
 #[test]
 fn sup_roundtrip_from_mkv() {
     let mkv = "tests/fixtures/matroska-with-cues.mkv";
-    if !Path::new(mkv).exists() { return; }
+    if !Path::new(mkv).exists() {
+        return;
+    }
 
     let batch = batch_baseline(mkv);
     assert!(!batch.is_empty(), "should have at least one track");
@@ -396,7 +452,10 @@ fn sup_roundtrip_from_mkv() {
     let extractor = libpgs::Extractor::open(&sup_path).expect("open .sup");
     assert_eq!(extractor.tracks().len(), 1);
     assert_eq!(extractor.tracks()[0].track_id, 0);
-    assert_eq!(extractor.tracks()[0].container, libpgs::ContainerFormat::Sup);
+    assert_eq!(
+        extractor.tracks()[0].container,
+        libpgs::ContainerFormat::Sup
+    );
 
     let mut ds_count = 0usize;
     let mut seg_count = 0usize;
@@ -425,7 +484,8 @@ fn sup_roundtrip_from_mkv() {
             "roundtrip PTS mismatch at display set {i}"
         );
         assert_eq!(
-            tds.display_set.segments.len(), orig_ds.segments.len(),
+            tds.display_set.segments.len(),
+            orig_ds.segments.len(),
             "roundtrip segment count mismatch at display set {i}"
         );
     }
