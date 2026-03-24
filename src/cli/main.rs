@@ -146,7 +146,8 @@ fn cmd_bench(args: &[String]) -> Result<(), libpgs::error::PgsError> {
     let elapsed = start.elapsed();
 
     // Group results by track for display.
-    let mut track_ds_counts: std::collections::HashMap<u32, (usize, usize)> = std::collections::HashMap::new();
+    let mut track_ds_counts: std::collections::HashMap<u32, (usize, usize)> =
+        std::collections::HashMap::new();
     for tds in &results {
         let entry = track_ds_counts.entry(tds.track_id).or_insert((0, 0));
         entry.0 += 1;
@@ -154,7 +155,10 @@ fn cmd_bench(args: &[String]) -> Result<(), libpgs::error::PgsError> {
     }
 
     let total_display_sets = results.len();
-    let total_segments: usize = results.iter().map(|tds| tds.display_set.segments.len()).sum();
+    let total_segments: usize = results
+        .iter()
+        .map(|tds| tds.display_set.segments.len())
+        .sum();
     let ratio = if stats.file_size > 0 {
         (stats.bytes_read as f64 / stats.file_size as f64) * 100.0
     } else {
@@ -184,7 +188,10 @@ fn cmd_bench(args: &[String]) -> Result<(), libpgs::error::PgsError> {
             );
         }
     }
-    println!("Total:         {} display sets, {} segments", total_display_sets, total_segments);
+    println!(
+        "Total:         {} display sets, {} segments",
+        total_display_sets, total_segments
+    );
     println!("Time:          {:.3}s", elapsed.as_secs_f64());
 
     Ok(())
@@ -192,11 +199,14 @@ fn cmd_bench(args: &[String]) -> Result<(), libpgs::error::PgsError> {
 
 /// Parse a comma-separated list of track IDs (e.g. "3", "3,5,8").
 fn parse_track_ids(value: &str) -> Vec<u32> {
-    value.split(',')
-        .map(|s| s.trim().parse().unwrap_or_else(|_| {
-            eprintln!("Invalid track ID: {}", s.trim());
-            process::exit(1);
-        }))
+    value
+        .split(',')
+        .map(|s| {
+            s.trim().parse().unwrap_or_else(|_| {
+                eprintln!("Invalid track ID: {}", s.trim());
+                process::exit(1);
+            })
+        })
         .collect()
 }
 
@@ -245,10 +255,7 @@ fn cmd_stream(args: &[String]) -> Result<(), libpgs::error::PgsError> {
     }
 }
 
-fn stream_ndjson(
-    out: &mut impl Write,
-    extractor: &mut libpgs::Extractor,
-) -> std::io::Result<()> {
+fn stream_ndjson(out: &mut impl Write, extractor: &mut libpgs::Extractor) -> std::io::Result<()> {
     // Emit tracks header as first line.
     let tracks = extractor.tracks();
     write!(out, "{{\"type\":\"tracks\",\"tracks\":[")?;
@@ -279,7 +286,7 @@ fn stream_ndjson(
 
     // Stream display sets, one line per display set.
     for result in extractor {
-        let tds = result.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        let tds = result.map_err(std::io::Error::other)?;
         let ds = &tds.display_set;
         let index = track_indices.entry(tds.track_id).or_insert(0);
         let current_index = *index;
@@ -320,7 +327,15 @@ fn stream_ndjson(
 
 fn json_string_or_null(s: Option<&str>) -> String {
     match s {
-        Some(v) => format!("\"{}\"", v),
+        Some(v) => {
+            let escaped = v
+                .replace('\\', "\\\\")
+                .replace('"', "\\\"")
+                .replace('\n', "\\n")
+                .replace('\r', "\\r")
+                .replace('\t', "\\t");
+            format!("\"{escaped}\"")
+        }
         None => "null".to_string(),
     }
 }
@@ -367,11 +382,10 @@ fn segment_type_name(st: libpgs::pgs::segment::SegmentType) -> &'static str {
     }
 }
 
-const BASE64_CHARS: &[u8; 64] =
-    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+const BASE64_CHARS: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 fn base64_encode(data: &[u8]) -> String {
-    let mut encoded = String::with_capacity((data.len() + 2) / 3 * 4);
+    let mut encoded = String::with_capacity(data.len().div_ceil(3) * 4);
     for chunk in data.chunks(3) {
         let b0 = chunk[0] as u32;
         let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
@@ -470,7 +484,11 @@ fn cmd_extract(args: &[String]) -> Result<(), libpgs::error::PgsError> {
         if track_ids.is_empty() {
             println!("Extracting all PGS tracks from: {}", input.display());
         } else {
-            println!("Extracting PGS tracks {:?} from: {}", track_ids, input.display());
+            println!(
+                "Extracting PGS tracks {:?} from: {}",
+                track_ids,
+                input.display()
+            );
         }
 
         let track_results = if track_ids.is_empty() {
@@ -519,12 +537,12 @@ fn cmd_extract(args: &[String]) -> Result<(), libpgs::error::PgsError> {
             );
         } else {
             for t in &track_results {
-                let track_output = parent.join(format!(
-                    "{}_track{}.{}",
-                    stem, t.track.track_id, ext
-                ));
+                let track_output =
+                    parent.join(format!("{}_track{}.{}", stem, t.track.track_id, ext));
                 libpgs::write_sup_file(&t.display_sets, &track_output)?;
-                let file_size = std::fs::metadata(&track_output).map(|m| m.len()).unwrap_or(0);
+                let file_size = std::fs::metadata(&track_output)
+                    .map(|m| m.len())
+                    .unwrap_or(0);
                 println!(
                     "  Track {} -> {} ({} bytes)",
                     t.track.track_id,

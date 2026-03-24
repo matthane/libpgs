@@ -1,21 +1,21 @@
-pub mod error;
-pub mod pgs;
 pub mod ebml;
-pub mod mkv;
-pub mod m2ts;
-pub mod sup;
+pub mod error;
 pub mod io;
+pub mod m2ts;
+pub mod mkv;
+pub mod pgs;
+pub mod sup;
 
 use error::PgsError;
 use io::SeekBufReader;
-use mkv::stream::MkvExtractorState;
 use m2ts::stream::M2tsExtractorState;
-use sup::stream::SupExtractorState;
+use mkv::stream::MkvExtractorState;
 use pgs::DisplaySet;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use sup::stream::SupExtractorState;
 
 /// Container format of the source file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,7 +94,7 @@ pub struct TrackDisplaySet {
 
 /// Internal dispatch to format-specific streaming state machines.
 enum ExtractorInner {
-    Mkv(MkvExtractorState),
+    Mkv(Box<MkvExtractorState>),
     M2ts(M2tsExtractorState),
     Sup(SupExtractorState),
     Done,
@@ -171,7 +171,9 @@ impl Extractor {
         match format {
             ContainerFormat::Matroska => {
                 let meta = mkv::prepare_mkv_metadata(&mut reader)?;
-                let tracks: Vec<PgsTrackInfo> = meta.pgs_tracks.iter()
+                let tracks: Vec<PgsTrackInfo> = meta
+                    .pgs_tracks
+                    .iter()
                     .map(|t| mkv_track_to_info(t, &meta.frame_counts, &meta.cue_points))
                     .collect();
 
@@ -184,10 +186,13 @@ impl Extractor {
                 )?;
 
                 Ok(Extractor {
-                    inner: ExtractorInner::Mkv(state),
+                    inner: ExtractorInner::Mkv(Box::new(state)),
                     catalog: Vec::new(),
                     tracks,
-                    stats: ExtractionStats { file_size, bytes_read: 0 },
+                    stats: ExtractionStats {
+                        file_size,
+                        bytes_read: 0,
+                    },
                     path: path.to_path_buf(),
                     format: ContainerFormat::Matroska,
                     mkv_strategy: MkvStrategy::Auto,
@@ -200,7 +205,9 @@ impl Extractor {
                 detect_format(&mut reader)?;
 
                 let meta = m2ts::prepare_m2ts_metadata(&mut reader, Some(path))?;
-                let tracks: Vec<PgsTrackInfo> = meta.tracks.iter()
+                let tracks: Vec<PgsTrackInfo> = meta
+                    .tracks
+                    .iter()
                     .map(|t| m2ts_track_to_info(t, format))
                     .collect();
 
@@ -210,7 +217,10 @@ impl Extractor {
                     inner: ExtractorInner::M2ts(state),
                     catalog: Vec::new(),
                     tracks,
-                    stats: ExtractionStats { file_size, bytes_read: 0 },
+                    stats: ExtractionStats {
+                        file_size,
+                        bytes_read: 0,
+                    },
                     path: path.to_path_buf(),
                     format,
                     mkv_strategy: MkvStrategy::Auto,
@@ -224,7 +234,10 @@ impl Extractor {
                     inner: ExtractorInner::Sup(state),
                     catalog: Vec::new(),
                     tracks,
-                    stats: ExtractionStats { file_size, bytes_read: 0 },
+                    stats: ExtractionStats {
+                        file_size,
+                        bytes_read: 0,
+                    },
                     path: path.to_path_buf(),
                     format: ContainerFormat::Sup,
                     mkv_strategy: MkvStrategy::Auto,
@@ -237,6 +250,7 @@ impl Extractor {
     ///
     /// Must be called before the first call to `next()`. Only affects MKV files.
     /// Useful for benchmarking different strategies on NAS storage.
+    #[must_use]
     pub fn with_mkv_strategy(mut self, strategy: MkvStrategy) -> Self {
         if self.format != ContainerFormat::Matroska || strategy == self.mkv_strategy {
             return self;
@@ -259,6 +273,7 @@ impl Extractor {
     /// Must be called before the first call to `next()`. Configures the
     /// internal state machine to only create assemblers for matching tracks
     /// and skip non-matching blocks at the source level.
+    #[must_use]
     ///
     /// # Example
     ///
@@ -299,29 +314,28 @@ impl Extractor {
 
         let meta = mkv::prepare_mkv_metadata(&mut reader)?;
         let tracks: Vec<PgsTrackInfo> = if let Some(ids) = track_ids {
-            meta.pgs_tracks.iter()
+            meta.pgs_tracks
+                .iter()
                 .filter(|t| ids.contains(&(t.track_number as u32)))
                 .map(|t| mkv_track_to_info(t, &meta.frame_counts, &meta.cue_points))
                 .collect()
         } else {
-            meta.pgs_tracks.iter()
+            meta.pgs_tracks
+                .iter()
                 .map(|t| mkv_track_to_info(t, &meta.frame_counts, &meta.cue_points))
                 .collect()
         };
 
-        let state = MkvExtractorState::new(
-            reader,
-            path.to_path_buf(),
-            meta,
-            track_ids,
-            strategy,
-        )?;
+        let state = MkvExtractorState::new(reader, path.to_path_buf(), meta, track_ids, strategy)?;
 
         Ok(Extractor {
-            inner: ExtractorInner::Mkv(state),
+            inner: ExtractorInner::Mkv(Box::new(state)),
             catalog: Vec::new(),
             tracks,
-            stats: ExtractionStats { file_size, bytes_read: 0 },
+            stats: ExtractionStats {
+                file_size,
+                bytes_read: 0,
+            },
             path: path.to_path_buf(),
             format: ContainerFormat::Matroska,
             mkv_strategy: strategy,
@@ -345,7 +359,9 @@ impl Extractor {
                 detect_format(&mut reader)?;
 
                 let meta = m2ts::prepare_m2ts_metadata(&mut reader, Some(path))?;
-                let tracks: Vec<PgsTrackInfo> = meta.tracks.iter()
+                let tracks: Vec<PgsTrackInfo> = meta
+                    .tracks
+                    .iter()
                     .filter(|t| track_ids.contains(&(t.pid as u32)))
                     .map(|t| m2ts_track_to_info(t, fmt))
                     .collect();
@@ -356,7 +372,10 @@ impl Extractor {
                     inner: ExtractorInner::M2ts(state),
                     catalog: Vec::new(),
                     tracks,
-                    stats: ExtractionStats { file_size, bytes_read: 0 },
+                    stats: ExtractionStats {
+                        file_size,
+                        bytes_read: 0,
+                    },
                     path: path.to_path_buf(),
                     format: fmt,
                     mkv_strategy: MkvStrategy::Auto,
@@ -368,7 +387,10 @@ impl Extractor {
                         inner: ExtractorInner::Done,
                         catalog: Vec::new(),
                         tracks: Vec::new(),
-                        stats: ExtractionStats { file_size, bytes_read: 0 },
+                        stats: ExtractionStats {
+                            file_size,
+                            bytes_read: 0,
+                        },
                         path: path.to_path_buf(),
                         format: ContainerFormat::Sup,
                         mkv_strategy: MkvStrategy::Auto,
@@ -386,7 +408,10 @@ impl Extractor {
                     inner: ExtractorInner::Sup(state),
                     catalog: Vec::new(),
                     tracks,
-                    stats: ExtractionStats { file_size, bytes_read: 0 },
+                    stats: ExtractionStats {
+                        file_size,
+                        bytes_read: 0,
+                    },
                     path: path.to_path_buf(),
                     format: ContainerFormat::Sup,
                     mkv_strategy: MkvStrategy::Auto,
@@ -407,7 +432,8 @@ impl Extractor {
 
     /// Display sets yielded so far for a specific track.
     pub fn history_for_track(&self, track_id: u32) -> Vec<&TrackDisplaySet> {
-        self.catalog.iter()
+        self.catalog
+            .iter()
             .filter(|ds| ds.track_id == track_id)
             .collect()
     }
@@ -436,38 +462,22 @@ impl Extractor {
     /// file handles for maximum throughput.
     pub fn collect_by_track(mut self) -> Result<Vec<TrackDisplaySets>, PgsError> {
         // Try parallel cues optimization for MKV.
-        if let ExtractorInner::Mkv(ref state) = self.inner {
-            if let Some(result) = state.try_collect_parallel() {
-                return result;
-            }
+        if let ExtractorInner::Mkv(ref state) = self.inner
+            && let Some(result) = state.try_collect_parallel()
+        {
+            return result;
         }
 
         // Build track info lookup from the pre-parsed metadata.
-        let track_info_map: HashMap<u32, PgsTrackInfo> = self.tracks.iter()
+        let track_info_map: HashMap<u32, PgsTrackInfo> = self
+            .tracks
+            .iter()
             .map(|t| (t.track_id, t.clone()))
             .collect();
 
-        // Sequential drain.
-        let mut track_map: HashMap<u32, Vec<DisplaySet>> = HashMap::new();
-        let mut track_order: Vec<u32> = Vec::new();
-
-        for result in self.by_ref() {
-            let tds = result?;
-            let entry = track_map.entry(tds.track_id).or_insert_with(|| {
-                track_order.push(tds.track_id);
-                Vec::new()
-            });
-            entry.push(tds.display_set);
-        }
-
-        Ok(track_order.into_iter()
-            .filter_map(|id| {
-                let display_sets = track_map.remove(&id)?;
-                if display_sets.is_empty() { return None; }
-                let track = track_info_map.get(&id)?.clone();
-                Some(TrackDisplaySets { track, display_sets })
-            })
-            .collect())
+        // Sequential drain and group.
+        let results = self.by_ref().collect::<Result<Vec<_>, _>>()?;
+        Ok(group_by_track(results, &track_info_map))
     }
 
     /// Update stats from the inner reader.
@@ -527,7 +537,9 @@ fn detect_format(reader: &mut SeekBufReader<File>) -> Result<ContainerFormat, Pg
     if magic[0] == 0x47 || magic[4] == 0x47 {
         match m2ts::ts_packet::detect_packet_format(reader) {
             Ok(m2ts::ts_packet::PacketFormat::M2ts) => return Ok(ContainerFormat::M2ts),
-            Ok(m2ts::ts_packet::PacketFormat::RawTs) => return Ok(ContainerFormat::TransportStream),
+            Ok(m2ts::ts_packet::PacketFormat::RawTs) => {
+                return Ok(ContainerFormat::TransportStream);
+            }
             Err(_) => {}
         }
     }
@@ -546,9 +558,11 @@ fn mkv_track_to_info(
     frame_counts: &HashMap<u64, u64>,
     cue_points: &Option<Vec<mkv::cues::PgsCuePoint>>,
 ) -> PgsTrackInfo {
-    let has_cues = Some(cue_points.as_ref().is_some_and(|cues| {
-        cues.iter().any(|cp| cp.track_number == t.track_number)
-    }));
+    let has_cues = Some(
+        cue_points
+            .as_ref()
+            .is_some_and(|cues| cues.iter().any(|cp| cp.track_number == t.track_number)),
+    );
     PgsTrackInfo {
         track_id: t.track_number as u32,
         language: t.language.clone(),
@@ -599,7 +613,9 @@ pub fn list_pgs_tracks(path: &Path) -> Result<Vec<PgsTrackInfo>, PgsError> {
     match format {
         ContainerFormat::Matroska => {
             let meta = mkv::prepare_mkv_metadata(&mut reader)?;
-            Ok(meta.pgs_tracks.iter()
+            Ok(meta
+                .pgs_tracks
+                .iter()
                 .map(|t| mkv_track_to_info(t, &meta.frame_counts, &meta.cue_points))
                 .collect())
         }
@@ -610,18 +626,14 @@ pub fn list_pgs_tracks(path: &Path) -> Result<Vec<PgsTrackInfo>, PgsError> {
                 .map(|t| m2ts_track_to_info(t, format))
                 .collect())
         }
-        ContainerFormat::Sup => {
-            Ok(vec![sup_track_info()])
-        }
+        ContainerFormat::Sup => Ok(vec![sup_track_info()]),
     }
 }
 
 /// Extract all PGS Display Sets from all tracks in a container file.
 ///
 /// Returns display sets grouped by track, with track metadata.
-pub fn extract_all_display_sets(
-    path: &Path,
-) -> Result<Vec<TrackDisplaySets>, PgsError> {
+pub fn extract_all_display_sets(path: &Path) -> Result<Vec<TrackDisplaySets>, PgsError> {
     Extractor::open(path)?.collect_by_track()
 }
 
@@ -629,19 +641,12 @@ pub fn extract_all_display_sets(
 /// Larger buffers reduce OS-level read calls and improve NAS throughput.
 const M2TS_BUF_SIZE: usize = 2 * 1024 * 1024;
 
-/// Extract all PGS Display Sets from all tracks and return I/O statistics.
-pub fn extract_all_display_sets_with_stats(
-    path: &Path,
-) -> Result<(Vec<TrackDisplaySets>, ExtractionStats), PgsError> {
-    let mut extractor = Extractor::open(path)?;
-    let track_info_map: HashMap<u32, PgsTrackInfo> = extractor.tracks().iter()
-        .map(|t| (t.track_id, t.clone()))
-        .collect();
-
-    let results = extractor.by_ref().collect::<Result<Vec<_>, _>>()?;
-    let stats = extractor.stats().clone();
-
-    // Group by track.
+/// Group a flat list of `TrackDisplaySet` into per-track `TrackDisplaySets`,
+/// preserving insertion order of tracks.
+fn group_by_track(
+    results: Vec<TrackDisplaySet>,
+    track_info_map: &HashMap<u32, PgsTrackInfo>,
+) -> Vec<TrackDisplaySets> {
     let mut track_map: HashMap<u32, Vec<DisplaySet>> = HashMap::new();
     let mut track_order: Vec<u32> = Vec::new();
 
@@ -653,14 +658,36 @@ pub fn extract_all_display_sets_with_stats(
         entry.push(tds.display_set);
     }
 
-    let grouped = track_order.into_iter()
+    track_order
+        .into_iter()
         .filter_map(|id| {
             let display_sets = track_map.remove(&id)?;
-            if display_sets.is_empty() { return None; }
+            if display_sets.is_empty() {
+                return None;
+            }
             let track = track_info_map.get(&id)?.clone();
-            Some(TrackDisplaySets { track, display_sets })
+            Some(TrackDisplaySets {
+                track,
+                display_sets,
+            })
         })
+        .collect()
+}
+
+/// Extract all PGS Display Sets from all tracks and return I/O statistics.
+pub fn extract_all_display_sets_with_stats(
+    path: &Path,
+) -> Result<(Vec<TrackDisplaySets>, ExtractionStats), PgsError> {
+    let mut extractor = Extractor::open(path)?;
+    let track_info_map: HashMap<u32, PgsTrackInfo> = extractor
+        .tracks()
+        .iter()
+        .map(|t| (t.track_id, t.clone()))
         .collect();
+
+    let results = extractor.by_ref().collect::<Result<Vec<_>, _>>()?;
+    let stats = extractor.stats().clone();
+    let grouped = group_by_track(results, &track_info_map);
 
     Ok((grouped, stats))
 }
@@ -697,7 +724,7 @@ pub fn extract_display_sets_with_stats(
     let mut display_sets = Vec::new();
     for result in extractor.by_ref() {
         let tds = result?;
-        if target_id.map_or(true, |id| tds.track_id == id) {
+        if target_id.is_none_or(|id| tds.track_id == id) {
             display_sets.push(tds.display_set);
         }
     }
@@ -707,19 +734,17 @@ pub fn extract_display_sets_with_stats(
 }
 
 /// Write Display Sets as a raw .sup file (concatenated PGS segments with headers).
-pub fn write_sup_file(
-    display_sets: &[DisplaySet],
-    output: &Path,
-) -> Result<(), PgsError> {
-    let mut file = File::create(output)?;
+pub fn write_sup_file(display_sets: &[DisplaySet], output: &Path) -> Result<(), PgsError> {
+    let file = File::create(output)?;
+    let mut writer = std::io::BufWriter::new(file);
 
     for ds in display_sets {
         for segment in &ds.segments {
             let bytes = segment.to_bytes();
-            file.write_all(&bytes)?;
+            writer.write_all(&bytes)?;
         }
     }
 
-    file.flush()?;
+    writer.flush()?;
     Ok(())
 }

@@ -1,9 +1,9 @@
-pub mod ts_packet;
-pub mod pat;
-pub mod pmt;
-pub mod pes;
-pub mod stream;
 pub(crate) mod clpi;
+pub mod pat;
+pub mod pes;
+pub mod pmt;
+pub mod stream;
+pub mod ts_packet;
 
 use crate::error::PgsError;
 use crate::io::SeekBufReader;
@@ -78,10 +78,10 @@ fn apply_clpi_fallback(tracks: Vec<M2tsPgsTrack>, m2ts_path: Option<&Path>) -> V
     tracks
         .into_iter()
         .map(|mut t| {
-            if t.language.is_none() {
-                if let Some(lang) = clpi_map.get(&t.pid) {
-                    t.language = Some(lang.clone());
-                }
+            if t.language.is_none()
+                && let Some(lang) = clpi_map.get(&t.pid)
+            {
+                t.language = Some(lang.clone());
             }
             t
         })
@@ -116,7 +116,11 @@ pub(crate) const SCAN_BLOCK_SIZE: usize = 2 * 1024 * 1024;
 pub(crate) const MAX_RESYNC_SCAN: u64 = 256 * 1024;
 
 /// Find the first sync-byte-aligned offset within a block.
-pub(crate) fn find_sync_start(data: &[u8], sync_offset: usize, packet_size: usize) -> Option<usize> {
+pub(crate) fn find_sync_start(
+    data: &[u8],
+    sync_offset: usize,
+    packet_size: usize,
+) -> Option<usize> {
     if data.len() < sync_offset + packet_size + 1 {
         return None;
     }
@@ -218,13 +222,22 @@ mod tests {
 
         let meta = M2tsMetadata {
             format: PacketFormat::RawTs,
-            tracks: pids.iter().map(|&pid| M2tsPgsTrack { pid, language: None }).collect(),
+            tracks: pids
+                .iter()
+                .map(|&pid| M2tsPgsTrack {
+                    pid,
+                    language: None,
+                })
+                .collect(),
             pgs_pids: pids.to_vec(),
             file_size: data.len() as u64,
         };
 
         let ext = stream::M2tsExtractorState::new(
-            reader, meta, ContainerFormat::TransportStream, track_filter,
+            reader,
+            meta,
+            ContainerFormat::TransportStream,
+            track_filter,
         );
 
         // Clean up temp file (already opened by the reader).

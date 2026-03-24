@@ -1,20 +1,20 @@
-pub mod header;
-pub mod tracks;
-pub mod cues;
-pub mod cluster;
 pub mod block;
+pub mod cluster;
+pub mod cues;
+pub mod header;
 pub mod stream;
 pub mod tags;
+pub mod tracks;
 
 use crate::error::PgsError;
 use crate::io::SeekBufReader;
-use crate::pgs::{DisplaySet, DisplaySetAssembler, PgsSegment};
 use crate::pgs::segment::PGS_MAGIC;
-use tracks::ContentCompAlgo;
+use crate::pgs::{DisplaySet, DisplaySetAssembler, PgsSegment};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Seek};
 use std::path::Path;
+use tracks::ContentCompAlgo;
 
 /// Minimum cue points to justify parallel extraction.
 pub(crate) const PARALLEL_CUE_THRESHOLD: usize = 32;
@@ -44,7 +44,8 @@ pub(crate) fn prepare_mkv_metadata<R: Read + Seek>(
     let _doc_type = header::parse_ebml_header(reader)?;
     let layout = header::parse_segment(reader)?;
 
-    let tracks_pos = layout.tracks_position
+    let tracks_pos = layout
+        .tracks_position
         .ok_or_else(|| PgsError::InvalidMkv("Tracks element not found".into()))?;
     let pgs_tracks = tracks::parse_tracks(reader, tracks_pos)?;
 
@@ -74,20 +75,21 @@ pub(crate) fn prepare_mkv_metadata<R: Read + Seek>(
             layout.segment_data_start,
             &pgs_track_numbers,
         )?;
-        if points.is_empty() { None } else { Some(points) }
+        if points.is_empty() {
+            None
+        } else {
+            Some(points)
+        }
     } else {
         None
     };
 
     let frame_counts = if let Some(tags_pos) = layout.tags_position {
-        let target_uids: Vec<u64> = pgs_tracks.iter()
-            .filter_map(|t| t.track_uid)
-            .collect();
+        let target_uids: Vec<u64> = pgs_tracks.iter().filter_map(|t| t.track_uid).collect();
         if target_uids.is_empty() {
             HashMap::new()
         } else {
-            tags::parse_tags_frame_counts(reader, tags_pos, &target_uids)
-                .unwrap_or_default()
+            tags::parse_tags_frame_counts(reader, tags_pos, &target_uids).unwrap_or_default()
         }
     } else {
         HashMap::new()
@@ -112,7 +114,8 @@ pub fn list_pgs_tracks_mkv<R: Read + Seek>(
     let _doc_type = header::parse_ebml_header(reader)?;
     let layout = header::parse_segment(reader)?;
 
-    let tracks_pos = layout.tracks_position
+    let tracks_pos = layout
+        .tracks_position
         .ok_or_else(|| PgsError::InvalidMkv("Tracks element not found".into()))?;
     tracks::parse_tracks(reader, tracks_pos)
 }
@@ -130,7 +133,11 @@ pub(crate) struct TrackAssemblers {
 }
 
 impl TrackAssemblers {
-    pub(crate) fn new(track_numbers: &[u64], compression: &HashMap<u64, ContentCompAlgo>, timestamp_scale: u64) -> Self {
+    pub(crate) fn new(
+        track_numbers: &[u64],
+        compression: &HashMap<u64, ContentCompAlgo>,
+        timestamp_scale: u64,
+    ) -> Self {
         let mut tracks = HashMap::new();
         let mut order = Vec::new();
         for &tn in track_numbers {
@@ -145,20 +152,13 @@ impl TrackAssemblers {
         }
     }
 
-    /// Convert an MKV timestamp (in clock ticks) to PGS 90kHz PTS.
-    pub(crate) fn mkv_timestamp_to_pts(&self, mkv_ts: i64) -> u64 {
-        // time_ns = mkv_ts * timestamp_scale
-        // pts_90khz = time_ns * 90_000 / 1_000_000_000 = time_ns * 9 / 100_000
-        let time_ns = mkv_ts as i128 * self.timestamp_scale as i128;
-        let pts = time_ns * 9 / 100_000;
-        pts.max(0) as u64
-    }
-
     pub(crate) fn process_pgs_blocks(&mut self, pgs_blocks: Vec<cluster::PgsBlock>) {
         for pgs_block in pgs_blocks {
             let comp = self.compression.get(&pgs_block.track_number);
-            let decoded = decode_block_data(&pgs_block.data, comp);
-            let pts = self.mkv_timestamp_to_pts(pgs_block.timestamp);
+            let Some(decoded) = decode_block_data(&pgs_block.data, comp) else {
+                continue; // Skip blocks that fail decompression
+            };
+            let pts = mkv_timestamp_to_pts(pgs_block.timestamp, self.timestamp_scale);
             if let Some((assembler, display_sets)) = self.tracks.get_mut(&pgs_block.track_number) {
                 process_pgs_block(&decoded, pts, assembler, display_sets);
             }
@@ -178,27 +178,96 @@ impl TrackAssemblers {
     }
 }
 
+/// Convert an MKV timestamp (in clock ticks) to PGS 90kHz PTS.
+pub(crate) fn mkv_timestamp_to_pts(mkv_ts: i64, timestamp_scale: u64) -> u64 {
+    // time_ns = mkv_ts * timestamp_scale
+    // pts_90khz = time_ns * 90_000 / 1_000_000_000 = time_ns * 9 / 100_000
+    let time_ns = mkv_ts as i128 * timestamp_scale as i128;
+    let pts = time_ns * 9 / 100_000;
+    pts.max(0) as u64
+}
+
 /// Decode block data according to the track's content encoding.
-pub(crate) fn decode_block_data(data: &[u8], compression: Option<&ContentCompAlgo>) -> Vec<u8> {
+///
+/// Returns `None` if zlib decompression fails, indicating the block should be skipped.
+/// Returns borrowed data (`Cow::Borrowed`) when no decompression is needed to avoid
+/// allocating on the hot path for uncompressed tracks.
+pub(crate) fn decode_block_data<'a>(
+    data: &'a [u8],
+    compression: Option<&ContentCompAlgo>,
+) -> Option<std::borrow::Cow<'a, [u8]>> {
     match compression {
         Some(ContentCompAlgo::Zlib) => {
             use flate2::read::ZlibDecoder;
             use std::io::Read as _;
             let mut decoder = ZlibDecoder::new(data);
             let mut decoded = Vec::new();
-            if decoder.read_to_end(&mut decoded).is_ok() {
-                decoded
-            } else {
-                data.to_vec()
-            }
+            decoder.read_to_end(&mut decoded).ok()?;
+            Some(std::borrow::Cow::Owned(decoded))
         }
         Some(ContentCompAlgo::HeaderStripping(prefix)) => {
             let mut decoded = Vec::with_capacity(prefix.len() + data.len());
             decoded.extend_from_slice(prefix);
             decoded.extend_from_slice(data);
-            decoded
+            Some(std::borrow::Cow::Owned(decoded))
         }
-        None => data.to_vec(),
+        None => Some(std::borrow::Cow::Borrowed(data)),
+    }
+}
+
+/// Extract PGS blocks for a single cue point using direct-seek when
+/// `relative_position` is available, falling back to cluster scanning.
+///
+/// Shared by both the batch parallel path and the streaming state machine.
+pub(crate) fn extract_blocks_for_cue_point<R: Read + Seek>(
+    reader: &mut SeekBufReader<R>,
+    cp: &cues::PgsCuePoint,
+    pgs_track_numbers: &[u64],
+    cluster_header_cache: &mut HashMap<u64, u64>,
+    visited_clusters: &mut std::collections::HashSet<u64>,
+) -> Result<Vec<cluster::PgsBlock>, PgsError> {
+    if let Some(rel_pos) = cp.relative_position {
+        // Direct seek: read only the referenced block.
+        let cluster_data_start = match cluster_header_cache.get(&cp.cluster_position) {
+            Some(&cached) => cached,
+            None => {
+                reader.seek_to(cp.cluster_position)?;
+                let id = crate::ebml::read_element_id(reader)?;
+                if id.value != crate::ebml::ids::CLUSTER {
+                    return Ok(Vec::new());
+                }
+                let _size = crate::ebml::read_element_size(reader)?;
+                let ds = reader.position();
+                cluster_header_cache.insert(cp.cluster_position, ds);
+                ds
+            }
+        };
+
+        let block_pos = cluster_data_start + rel_pos;
+        if let Some(pgs_block) =
+            cluster::read_block_at_position(reader, block_pos, cp.time, pgs_track_numbers)?
+        {
+            Ok(vec![pgs_block])
+        } else {
+            Ok(Vec::new())
+        }
+    } else {
+        // No relative position — fall back to scanning entire cluster.
+        if !visited_clusters.insert(cp.cluster_position) {
+            return Ok(Vec::new());
+        }
+        reader.seek_to(cp.cluster_position)?;
+        let id = crate::ebml::read_element_id(reader)?;
+        if id.value != crate::ebml::ids::CLUSTER {
+            return Ok(Vec::new());
+        }
+        let size = crate::ebml::read_element_size(reader)?;
+        let data_start = reader.position();
+        if size.value == u64::MAX {
+            return Ok(Vec::new());
+        }
+
+        cluster::scan_cluster_for_pgs(reader, data_start, size.value, pgs_track_numbers)
     }
 }
 
@@ -214,56 +283,14 @@ pub(crate) fn extract_blocks_for_cues<R: Read + Seek>(
     let mut cluster_header_cache: HashMap<u64, u64> = HashMap::new();
 
     for cp in cue_points {
-        if let Some(rel_pos) = cp.relative_position {
-            // Direct seek: read only the referenced block.
-            let cluster_data_start = match cluster_header_cache.get(&cp.cluster_position) {
-                Some(&cached) => cached,
-                None => {
-                    reader.seek_to(cp.cluster_position)?;
-                    let id = crate::ebml::read_element_id(reader)?;
-                    if id.value != crate::ebml::ids::CLUSTER {
-                        continue;
-                    }
-                    let _size = crate::ebml::read_element_size(reader)?;
-                    let ds = reader.position();
-                    cluster_header_cache.insert(cp.cluster_position, ds);
-                    ds
-                }
-            };
-
-            let block_pos = cluster_data_start + rel_pos;
-            if let Some(pgs_block) = cluster::read_block_at_position(
-                reader,
-                block_pos,
-                cp.time,
-                pgs_track_numbers,
-            )? {
-                blocks.push(pgs_block);
-            }
-        } else {
-            // No relative position — fall back to scanning entire cluster.
-            if !visited_clusters.insert(cp.cluster_position) {
-                continue;
-            }
-            reader.seek_to(cp.cluster_position)?;
-            let id = crate::ebml::read_element_id(reader)?;
-            if id.value != crate::ebml::ids::CLUSTER {
-                continue;
-            }
-            let size = crate::ebml::read_element_size(reader)?;
-            let data_start = reader.position();
-            if size.value == u64::MAX {
-                continue;
-            }
-
-            let pgs_blocks = cluster::scan_cluster_for_pgs(
-                reader,
-                data_start,
-                size.value,
-                pgs_track_numbers,
-            )?;
-            blocks.extend(pgs_blocks);
-        }
+        let cue_blocks = extract_blocks_for_cue_point(
+            reader,
+            cp,
+            pgs_track_numbers,
+            &mut cluster_header_cache,
+            &mut visited_clusters,
+        )?;
+        blocks.extend(cue_blocks);
     }
 
     Ok(blocks)
@@ -305,7 +332,10 @@ pub(crate) fn extract_via_cues_parallel(
 
         handles
             .into_iter()
-            .map(|h| h.join().unwrap_or_else(|_| Err(PgsError::InvalidMkv("worker thread panicked".into()))))
+            .map(|h| {
+                h.join()
+                    .unwrap_or_else(|_| Err(PgsError::InvalidMkv("worker thread panicked".into())))
+            })
             .collect()
     });
 
@@ -336,7 +366,7 @@ pub(crate) fn partition_by_cluster(
     }
 
     // Distribute groups across workers, balancing by count.
-    let target_per_worker = (sorted_cues.len() + num_workers - 1) / num_workers;
+    let target_per_worker = sorted_cues.len().div_ceil(num_workers);
     let mut chunks: Vec<Vec<cues::PgsCuePoint>> = vec![Vec::new(); num_workers];
     let mut worker_idx = 0;
 

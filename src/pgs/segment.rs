@@ -80,26 +80,28 @@ pub struct PgsSegment {
 impl PgsSegment {
     /// Parse a PGS segment from a byte slice that starts with the 13-byte header.
     /// Returns the segment and the number of bytes consumed.
-    pub fn parse(data: &[u8]) -> Result<(PgsSegment, usize), &'static str> {
+    pub fn parse(data: &[u8]) -> Result<(PgsSegment, usize), crate::error::PgsError> {
+        use crate::error::PgsError;
+
         if data.len() < HEADER_SIZE {
-            return Err("insufficient data for PGS header");
+            return Err(PgsError::InvalidPgs("insufficient data for PGS header".into()));
         }
 
         if data[0] != PGS_MAGIC[0] || data[1] != PGS_MAGIC[1] {
-            return Err("invalid PGS magic bytes");
+            return Err(PgsError::InvalidPgs("invalid PGS magic bytes".into()));
         }
 
         let pts = u32::from_be_bytes([data[2], data[3], data[4], data[5]]) as u64;
         let dts = u32::from_be_bytes([data[6], data[7], data[8], data[9]]) as u64;
 
         let segment_type = SegmentType::from_byte(data[10])
-            .ok_or("unknown PGS segment type")?;
+            .ok_or_else(|| PgsError::InvalidPgs("unknown PGS segment type".into()))?;
 
         let payload_size = u16::from_be_bytes([data[11], data[12]]) as usize;
 
         let total_size = HEADER_SIZE + payload_size;
         if data.len() < total_size {
-            return Err("insufficient data for PGS payload");
+            return Err(PgsError::InvalidPgs("insufficient data for PGS payload".into()));
         }
 
         let payload = data[HEADER_SIZE..total_size].to_vec();

@@ -1,15 +1,16 @@
+use super::cluster;
+use super::cues::PgsCuePoint;
+use super::tracks::ContentCompAlgo;
+use super::{
+    MAX_PARALLEL_WORKERS, MkvMetadata, PARALLEL_CUE_THRESHOLD, decode_block_data,
+    extract_blocks_for_cue_point, extract_via_cues_parallel, mkv_timestamp_to_pts,
+    process_pgs_block,
+};
 use crate::ebml::{ids, read_element_id, read_element_size};
 use crate::error::PgsError;
 use crate::io::SeekBufReader;
 use crate::pgs::DisplaySetAssembler;
 use crate::{ContainerFormat, MkvStrategy, PgsTrackInfo, TrackDisplaySet};
-use super::cluster;
-use super::cues::PgsCuePoint;
-use super::tracks::ContentCompAlgo;
-use super::{
-    MkvMetadata, PARALLEL_CUE_THRESHOLD, MAX_PARALLEL_WORKERS,
-    decode_block_data, process_pgs_block, extract_via_cues_parallel,
-};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::File;
 use std::path::PathBuf;
@@ -24,6 +25,8 @@ pub(crate) struct MkvExtractorState {
     metadata: MkvMetadata,
     source: MkvBlockSource,
     assemblers: HashMap<u64, DisplaySetAssembler>,
+    /// Cached track numbers from assemblers (never changes after construction).
+    active_tracks: Vec<u64>,
     compression: HashMap<u64, ContentCompAlgo>,
     track_info: HashMap<u64, PgsTrackInfo>,
     timestamp_scale: u64,
@@ -71,7 +74,9 @@ impl MkvExtractorState {
     ) -> Result<Self, PgsError> {
         // Determine which tracks to extract.
         let active_tracks: Vec<u64> = if let Some(filter) = track_filter {
-            metadata.pgs_track_numbers.iter()
+            metadata
+                .pgs_track_numbers
+                .iter()
                 .filter(|&&tn| filter.contains(&(tn as u32)))
                 .copied()
                 .collect()
@@ -83,20 +88,25 @@ impl MkvExtractorState {
         let mut track_info = HashMap::new();
         for t in &metadata.pgs_tracks {
             if active_tracks.contains(&t.track_number) {
-                let has_cues = Some(metadata.cue_points.as_ref().is_some_and(|cues| {
-                    cues.iter().any(|cp| cp.track_number == t.track_number)
-                }));
-                track_info.insert(t.track_number, PgsTrackInfo {
-                    track_id: t.track_number as u32,
-                    language: t.language.clone(),
-                    container: ContainerFormat::Matroska,
-                    name: t.name.clone(),
-                    flag_default: t.flag_default,
-                    flag_forced: t.flag_forced,
-                    display_set_count: t.track_uid
-                        .and_then(|uid| metadata.frame_counts.get(&uid).copied()),
-                    has_cues,
-                });
+                let has_cues =
+                    Some(metadata.cue_points.as_ref().is_some_and(|cues| {
+                        cues.iter().any(|cp| cp.track_number == t.track_number)
+                    }));
+                track_info.insert(
+                    t.track_number,
+                    PgsTrackInfo {
+                        track_id: t.track_number as u32,
+                        language: t.language.clone(),
+                        container: ContainerFormat::Matroska,
+                        name: t.name.clone(),
+                        flag_default: t.flag_default,
+                        flag_forced: t.flag_forced,
+                        display_set_count: t
+                            .track_uid
+                            .and_then(|uid| metadata.frame_counts.get(&uid).copied()),
+                        has_cues,
+                    },
+                );
             }
         }
 
@@ -115,6 +125,7 @@ impl MkvExtractorState {
             metadata,
             source: MkvBlockSource::Uninitialized,
             assemblers,
+            active_tracks,
             compression,
             track_info,
             timestamp_scale,
@@ -129,18 +140,26 @@ impl MkvExtractorState {
     /// Deferred from construction so that track metadata is available immediately
     /// without waiting for potentially expensive cluster map building.
     fn init_source(&mut self) -> Result<(), PgsError> {
-        let first_cluster = self.metadata.layout.first_cluster_position
+        let first_cluster = self
+            .metadata
+            .layout
+            .first_cluster_position
             .ok_or_else(|| PgsError::InvalidMkv("no Clusters found".into()))?;
 
         // Auto: use Cues if available, otherwise fall back to Sequential.
         if self.strategy == MkvStrategy::Auto {
             let active_tracks: Vec<u64> = self.assemblers.keys().copied().collect();
             let filtered_cues = self.metadata.cue_points.as_ref().and_then(|cues| {
-                let filtered: Vec<_> = cues.iter()
+                let filtered: Vec<_> = cues
+                    .iter()
                     .filter(|cp| active_tracks.contains(&cp.track_number))
                     .cloned()
                     .collect();
-                if filtered.is_empty() { None } else { Some(filtered) }
+                if filtered.is_empty() {
+                    None
+                } else {
+                    Some(filtered)
+                }
             });
 
             if let Some(cue_points) = filtered_cues {
@@ -171,11 +190,11 @@ impl MkvExtractorState {
     pub(crate) fn next_display_set(&mut self) -> Option<Result<TrackDisplaySet, PgsError>> {
         // Lazy initialization: deferred from open() so track metadata is
         // available immediately without waiting for I/O strategy setup.
-        if matches!(self.source, MkvBlockSource::Uninitialized) {
-            if let Err(e) = self.init_source() {
-                self.source = MkvBlockSource::Done;
-                return Some(Err(e));
-            }
+        if matches!(self.source, MkvBlockSource::Uninitialized)
+            && let Err(e) = self.init_source()
+        {
+            self.source = MkvBlockSource::Done;
+            return Some(Err(e));
         }
 
         loop {
@@ -187,7 +206,7 @@ impl MkvExtractorState {
 
             // Advance the block source.
             match self.advance_source() {
-                Ok(true) => continue,  // Blocks were processed, check pending.
+                Ok(true) => continue,     // Blocks were processed, check pending.
                 Ok(false) => return None, // Source exhausted.
                 Err(e) => {
                     self.source = MkvBlockSource::Done;
@@ -200,10 +219,15 @@ impl MkvExtractorState {
     /// Advance the source by one step, processing any resulting blocks.
     /// Returns `Ok(true)` if progress was made, `Ok(false)` if done.
     fn advance_source(&mut self) -> Result<bool, PgsError> {
-        let active_tracks: Vec<u64> = self.assemblers.keys().copied().collect();
+        let active_tracks = &self.active_tracks;
 
         match &mut self.source {
-            MkvBlockSource::Cues { cue_points, index, cluster_header_cache, visited_clusters } => {
+            MkvBlockSource::Cues {
+                cue_points,
+                index,
+                cluster_header_cache,
+                visited_clusters,
+            } => {
                 if *index >= cue_points.len() {
                     self.source = MkvBlockSource::Done;
                     return Ok(false);
@@ -212,10 +236,10 @@ impl MkvExtractorState {
                 let cp = cue_points[*index].clone();
                 *index += 1;
 
-                let blocks = Self::extract_cue_point_blocks(
+                let blocks = extract_blocks_for_cue_point(
                     &mut self.reader,
                     &cp,
-                    &active_tracks,
+                    active_tracks,
                     cluster_header_cache,
                     visited_clusters,
                 )?;
@@ -224,7 +248,10 @@ impl MkvExtractorState {
                 Ok(true)
             }
 
-            MkvBlockSource::SequentialScan { current_position, segment_data_end } => {
+            MkvBlockSource::SequentialScan {
+                current_position,
+                segment_data_end,
+            } => {
                 let end = *segment_data_end;
 
                 loop {
@@ -269,7 +296,7 @@ impl MkvExtractorState {
                             &mut self.reader,
                             data_start,
                             size.value,
-                            &active_tracks,
+                            active_tracks,
                         )?;
 
                         *current_position = element_end;
@@ -288,81 +315,14 @@ impl MkvExtractorState {
         }
     }
 
-    /// Extract PGS blocks from a single cue point.
-    fn extract_cue_point_blocks(
-        reader: &mut SeekBufReader<File>,
-        cp: &PgsCuePoint,
-        active_tracks: &[u64],
-        cluster_header_cache: &mut HashMap<u64, u64>,
-        visited_clusters: &mut HashSet<u64>,
-    ) -> Result<Vec<cluster::PgsBlock>, PgsError> {
-        if let Some(rel_pos) = cp.relative_position {
-            // Direct seek to the referenced block.
-            let cluster_data_start = match cluster_header_cache.get(&cp.cluster_position) {
-                Some(&cached) => cached,
-                None => {
-                    reader.seek_to(cp.cluster_position)?;
-                    let id = crate::ebml::read_element_id(reader)?;
-                    if id.value != crate::ebml::ids::CLUSTER {
-                        return Ok(Vec::new());
-                    }
-                    let _size = crate::ebml::read_element_size(reader)?;
-                    let ds = reader.position();
-                    cluster_header_cache.insert(cp.cluster_position, ds);
-                    ds
-                }
-            };
-
-            let block_pos = cluster_data_start + rel_pos;
-            if let Some(pgs_block) = cluster::read_block_at_position(
-                reader,
-                block_pos,
-                cp.time,
-                active_tracks,
-            )? {
-                Ok(vec![pgs_block])
-            } else {
-                Ok(Vec::new())
-            }
-        } else {
-            // No relative position — scan entire cluster.
-            if !visited_clusters.insert(cp.cluster_position) {
-                return Ok(Vec::new());
-            }
-
-            reader.seek_to(cp.cluster_position)?;
-            let id = crate::ebml::read_element_id(reader)?;
-            if id.value != crate::ebml::ids::CLUSTER {
-                return Ok(Vec::new());
-            }
-            let size = crate::ebml::read_element_size(reader)?;
-            let data_start = reader.position();
-            if size.value == u64::MAX {
-                return Ok(Vec::new());
-            }
-
-            cluster::scan_cluster_for_pgs(
-                reader,
-                data_start,
-                size.value,
-                active_tracks,
-            )
-        }
-    }
-
-    /// Convert an MKV timestamp to PGS 90kHz PTS.
-    fn mkv_timestamp_to_pts(&self, mkv_ts: i64) -> u64 {
-        let time_ns = mkv_ts as i128 * self.timestamp_scale as i128;
-        let pts = time_ns * 9 / 100_000;
-        pts.max(0) as u64
-    }
-
     /// Decode blocks and push segments through assemblers, collecting display sets into pending.
     fn process_blocks(&mut self, blocks: Vec<cluster::PgsBlock>) {
         for block in blocks {
             let comp = self.compression.get(&block.track_number);
-            let decoded = decode_block_data(&block.data, comp);
-            let pts = self.mkv_timestamp_to_pts(block.timestamp);
+            let Some(decoded) = decode_block_data(&block.data, comp) else {
+                continue; // Skip blocks that fail decompression
+            };
+            let pts = mkv_timestamp_to_pts(block.timestamp, self.timestamp_scale);
 
             if let Some(assembler) = self.assemblers.get_mut(&block.track_number) {
                 let mut collected = Vec::new();
@@ -386,7 +346,9 @@ impl MkvExtractorState {
     ///
     /// Returns `Some(results)` if parallel extraction was used, `None` if not applicable.
     /// Only used when the iterator hasn't been partially consumed.
-    pub(crate) fn try_collect_parallel(&self) -> Option<Result<Vec<crate::TrackDisplaySets>, PgsError>> {
+    pub(crate) fn try_collect_parallel(
+        &self,
+    ) -> Option<Result<Vec<crate::TrackDisplaySets>, PgsError>> {
         // Can only use parallel extraction if nothing has been yielded yet.
         if self.yielded_count > 0 {
             return None;
@@ -414,10 +376,14 @@ impl MkvExtractorState {
         );
 
         Some(result.map(|track_results| {
-            track_results.into_iter()
+            track_results
+                .into_iter()
                 .filter_map(|(track_num, display_sets)| {
                     let info = self.track_info.get(&track_num)?.clone();
-                    Some(crate::TrackDisplaySets { track: info, display_sets })
+                    Some(crate::TrackDisplaySets {
+                        track: info,
+                        display_sets,
+                    })
                 })
                 .collect()
         }))

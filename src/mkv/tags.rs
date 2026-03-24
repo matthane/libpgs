@@ -29,7 +29,13 @@ pub(crate) fn parse_tags_frame_counts<R: Read + Seek>(
         let child_size = read_element_size(reader)?;
 
         if child_id.value == ids::TAG {
-            parse_tag(reader, reader.position(), child_size.value, target_uids, &mut counts)?;
+            parse_tag(
+                reader,
+                reader.position(),
+                child_size.value,
+                target_uids,
+                &mut counts,
+            )?;
         } else {
             reader.skip(child_size.value)?;
         }
@@ -60,7 +66,9 @@ fn parse_tag<R: Read + Seek>(
                 parse_targets(reader, reader.position(), child_size.value, &mut track_uids)?;
             }
             ids::SIMPLE_TAG => {
-                if let Some(count) = parse_simple_tag_frame_count(reader, reader.position(), child_size.value)? {
+                if let Some(count) =
+                    parse_simple_tag_frame_count(reader, reader.position(), child_size.value)?
+                {
                     frame_count = Some(count);
                 }
             }
@@ -132,12 +140,11 @@ fn parse_simple_tag_frame_count<R: Read + Seek>(
         }
     }
 
-    if tag_name.as_deref() == Some("NUMBER_OF_FRAMES") {
-        if let Some(s) = tag_string {
-            if let Ok(count) = s.trim().parse::<u64>() {
-                return Ok(Some(count));
-            }
-        }
+    if tag_name.as_deref() == Some("NUMBER_OF_FRAMES")
+        && let Some(s) = tag_string
+        && let Ok(count) = s.trim().parse::<u64>()
+    {
+        return Ok(Some(count));
     }
 
     Ok(None)

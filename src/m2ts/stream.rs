@@ -1,10 +1,10 @@
+use super::pes::PesReassembler;
+use super::ts_packet::{self, PacketFormat};
+use super::{M2tsMetadata, MAX_RESYNC_SCAN, SCAN_BLOCK_SIZE, find_sync_start};
 use crate::error::PgsError;
 use crate::io::SeekBufReader;
 use crate::pgs::DisplaySetAssembler;
 use crate::{ContainerFormat, PgsTrackInfo, TrackDisplaySet};
-use super::pes::PesReassembler;
-use super::ts_packet::{self, PacketFormat};
-use super::{M2tsMetadata, find_sync_start, SCAN_BLOCK_SIZE, MAX_RESYNC_SCAN};
 use std::collections::{HashMap, VecDeque};
 use std::fs::File;
 
@@ -36,7 +36,9 @@ impl M2tsExtractorState {
     ) -> Self {
         // Determine which PIDs to extract.
         let active_pids: Vec<u16> = if let Some(filter) = track_filter {
-            metadata.pgs_pids.iter()
+            metadata
+                .pgs_pids
+                .iter()
                 .filter(|&&pid| filter.contains(&(pid as u32)))
                 .copied()
                 .collect()
@@ -48,16 +50,19 @@ impl M2tsExtractorState {
         let mut track_info = HashMap::new();
         for t in &metadata.tracks {
             if active_pids.contains(&t.pid) {
-                track_info.insert(t.pid, PgsTrackInfo {
-                    track_id: t.pid as u32,
-                    language: t.language.clone(),
-                    container,
-                    name: None,
-                    flag_default: None,
-                    flag_forced: None,
-                    display_set_count: None,
-                    has_cues: None,
-                });
+                track_info.insert(
+                    t.pid,
+                    PgsTrackInfo {
+                        track_id: t.pid as u32,
+                        language: t.language.clone(),
+                        container,
+                        name: None,
+                        flag_default: None,
+                        flag_forced: None,
+                        display_set_count: None,
+                        has_cues: None,
+                    },
+                );
             }
         }
 
@@ -138,7 +143,8 @@ impl M2tsExtractorState {
 
         // Find packet alignment.
         let mut offset = 0;
-        if offset + sync_offset < block.len() && block[offset + sync_offset] != ts_packet::SYNC_BYTE {
+        if offset + sync_offset < block.len() && block[offset + sync_offset] != ts_packet::SYNC_BYTE
+        {
             match find_sync_start(&block, sync_offset, packet_size) {
                 Some(pos) => offset = pos,
                 None => {
@@ -177,25 +183,26 @@ impl M2tsExtractorState {
             let pid = ((block[ts_pos + 1] as u16 & 0x1F) << 8) | block[ts_pos + 2] as u16;
 
             if let Some((pes_asm, ds_asm)) = self.pid_state.get_mut(&pid) {
-                let ts_data: &[u8; ts_packet::TS_PACKET_SIZE] =
-                    block[ts_pos..ts_pos + ts_packet::TS_PACKET_SIZE]
-                        .try_into()
-                        .unwrap();
+                let ts_data: &[u8; ts_packet::TS_PACKET_SIZE] = block
+                    [ts_pos..ts_pos + ts_packet::TS_PACKET_SIZE]
+                    .try_into()
+                    .unwrap();
 
-                if let Ok((header, payload)) = ts_packet::extract_payload(ts_data) {
-                    if header.has_payload() && !payload.is_empty() {
-                        let segments = pes_asm.push(header.pusi, payload);
-                        for seg in segments {
-                            if let Some(ds) = ds_asm.push(seg) {
-                                if let Some(info) = self.track_info.get(&pid) {
-                                    self.pending.push_back(TrackDisplaySet {
-                                        track_id: info.track_id,
-                                        language: info.language.clone(),
-                                        container: self.container,
-                                        display_set: ds,
-                                    });
-                                }
-                            }
+                if let Ok((header, payload)) = ts_packet::extract_payload(ts_data)
+                    && header.has_payload()
+                    && !payload.is_empty()
+                {
+                    let segments = pes_asm.push(header.pusi, payload);
+                    for seg in segments {
+                        if let Some(ds) = ds_asm.push(seg)
+                            && let Some(info) = self.track_info.get(&pid)
+                        {
+                            self.pending.push_back(TrackDisplaySet {
+                                track_id: info.track_id,
+                                language: info.language.clone(),
+                                container: self.container,
+                                display_set: ds,
+                            });
                         }
                     }
                 }
@@ -219,15 +226,15 @@ impl M2tsExtractorState {
         for pid in pids {
             if let Some((pes_asm, ds_asm)) = self.pid_state.get_mut(&pid) {
                 for seg in pes_asm.flush() {
-                    if let Some(ds) = ds_asm.push(seg) {
-                        if let Some(info) = self.track_info.get(&pid) {
-                            self.pending.push_back(TrackDisplaySet {
-                                track_id: info.track_id,
-                                language: info.language.clone(),
-                                container: self.container,
-                                display_set: ds,
-                            });
-                        }
+                    if let Some(ds) = ds_asm.push(seg)
+                        && let Some(info) = self.track_info.get(&pid)
+                    {
+                        self.pending.push_back(TrackDisplaySet {
+                            track_id: info.track_id,
+                            language: info.language.clone(),
+                            container: self.container,
+                            display_set: ds,
+                        });
                     }
                 }
             }
