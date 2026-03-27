@@ -79,7 +79,7 @@ impl PcsData {
 
             let object_id = u16_be(payload, offset);
             let window_id = payload[offset + 2];
-            let cropped = payload[offset + 3] == 0x40;
+            let cropped = payload[offset + 3] & 0x80 != 0;
             let x = u16_be(payload, offset + 4);
             let y = u16_be(payload, offset + 6);
             offset += 8;
@@ -402,7 +402,7 @@ mod tests {
             // Composition object:
             0x00, 0x01, // object_id: 1
             0x00, // window_id: 0
-            0x40, // cropped: true
+            0x80, // cropped: true
             0x00, 0x64, // x: 100
             0x00, 0xC8, // y: 200
             // Crop info:
