@@ -177,6 +177,59 @@ impl PgsSegment {
         }
         CompositionState::from_byte(self.payload[7])
     }
+
+    /// Parse this segment's payload into structured data.
+    /// Returns `None` if the segment type doesn't match or the payload is malformed.
+    pub fn parse_payload(&self) -> Option<super::payload::ParsedPayload> {
+        use super::payload::ParsedPayload;
+        match self.segment_type {
+            SegmentType::PresentationComposition => {
+                super::payload::PcsData::parse(&self.payload).map(ParsedPayload::Pcs)
+            }
+            SegmentType::WindowDefinition => {
+                super::payload::WdsData::parse(&self.payload).map(ParsedPayload::Wds)
+            }
+            SegmentType::PaletteDefinition => {
+                super::payload::PdsData::parse(&self.payload).map(ParsedPayload::Pds)
+            }
+            SegmentType::ObjectDefinition => {
+                super::payload::OdsData::parse(&self.payload).map(ParsedPayload::Ods)
+            }
+            SegmentType::EndOfDisplaySet => Some(ParsedPayload::End),
+        }
+    }
+
+    /// Parse a PCS payload. Returns `None` if wrong type or malformed.
+    pub fn parse_pcs(&self) -> Option<super::payload::PcsData> {
+        if self.segment_type != SegmentType::PresentationComposition {
+            return None;
+        }
+        super::payload::PcsData::parse(&self.payload)
+    }
+
+    /// Parse a WDS payload. Returns `None` if wrong type or malformed.
+    pub fn parse_wds(&self) -> Option<super::payload::WdsData> {
+        if self.segment_type != SegmentType::WindowDefinition {
+            return None;
+        }
+        super::payload::WdsData::parse(&self.payload)
+    }
+
+    /// Parse a PDS payload. Returns `None` if wrong type or malformed.
+    pub fn parse_pds(&self) -> Option<super::payload::PdsData> {
+        if self.segment_type != SegmentType::PaletteDefinition {
+            return None;
+        }
+        super::payload::PdsData::parse(&self.payload)
+    }
+
+    /// Parse an ODS payload. Returns `None` if wrong type or malformed.
+    pub fn parse_ods(&self) -> Option<super::payload::OdsData> {
+        if self.segment_type != SegmentType::ObjectDefinition {
+            return None;
+        }
+        super::payload::OdsData::parse(&self.payload)
+    }
 }
 
 #[cfg(test)]
