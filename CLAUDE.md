@@ -110,27 +110,32 @@ src/
 ```
 libpgs tracks <file>                       # List PGS tracks
 libpgs extract <file> -o <out> [-t <id>]   # Extract to .sup
-libpgs stream <file> [-t <id>]             # Stream NDJSON to stdout
+libpgs stream <file> [-t <id>] [--raw-payloads]  # Stream NDJSON to stdout
 libpgs bench <file>                        # Benchmark I/O efficiency
 ```
 
 ### Stream command (NDJSON protocol)
 
-The `stream` command exposes the `Extractor` streaming API over stdout as newline-delimited JSON, enabling any language to consume PGS data incrementally via a subprocess pipe — no temp files or waiting for full extraction.
+The `stream` command exposes the `Extractor` streaming API over stdout as newline-delimited JSON, enabling any language to consume PGS data incrementally via a subprocess pipe — no temp files or waiting for full extraction. See `docs/STREAMING.md` for the full consumer reference.
 
 **Line 1 — track discovery:**
 ```json
-{"type":"tracks","tracks":[{"track_id":3,"language":"eng","container":"Matroska","name":"English Subtitles","flag_default":true,"flag_forced":false,"display_set_count":1234,"has_cues":true}]}
+{"type":"tracks","tracks":[{"track_id":3,"language":"eng","container":"Matroska","name":"English Subtitles","is_default":true,"is_forced":false,"display_set_count":1234,"indexed":true}]}
 ```
 
-Track fields: `track_id`, `language` (nullable), `container`, `name` (nullable, MKV TrackName), `flag_default` (nullable bool), `flag_forced` (nullable bool), `display_set_count` (nullable, from MKV Tags NUMBER_OF_FRAMES), `has_cues` (nullable bool, MKV only). M2TS tracks have `null` for MKV-specific fields.
+Track fields: `track_id`, `language` (nullable), `container`, `name` (nullable, MKV TrackName), `is_default` (nullable bool), `is_forced` (nullable bool), `display_set_count` (nullable, from MKV Tags NUMBER_OF_FRAMES), `indexed` (nullable bool, MKV only). M2TS tracks have `null` for MKV-specific fields.
 
 **Subsequent lines — one per display set, flushed immediately when yielded:**
+
+Display sets use semantic grouping instead of a flat segment array. PCS data is in `composition`, WDS in `windows[]`, PDS in `palettes[]`, ODS in `objects[]`. END segments are omitted (no data).
+
 ```json
-{"type":"display_set","track_id":3,"index":0,"pts":311580,"pts_ms":3462.0000,"composition_state":"EpochStart","segments":[{"type":"PresentationComposition","pts":311580,"dts":0,"size":19,"payload":"<base64>"},{"type":"EndOfDisplaySet","pts":311580,"dts":0,"size":0,"payload":""}]}
+{"type":"display_set","track_id":3,"index":0,"pts":311580,"pts_ms":3462.0000,"composition":{"number":1,"state":"epoch_start","video_width":1920,"video_height":1080,"palette_only":false,"palette_id":0,"objects":[{"object_id":0,"window_id":0,"x":773,"y":108,"crop":null}]},"windows":[{"id":0,"x":773,"y":108,"width":377,"height":43}],"palettes":[{"id":0,"version":0,"entries":[{"id":0,"luminance":16,"cr":128,"cb":128,"alpha":0}]}],"objects":[{"id":0,"version":0,"sequence":"complete","data_length":8635,"width":377,"height":43}]}
 ```
 
-Fields per display set: `track_id` (correlates with tracks header), `index` (0-based per-track sequence number), `pts` (90 kHz ticks), `pts_ms`, `composition_state` (Normal/AcquisitionPoint/EpochStart). Each segment includes `type`, `pts`, `dts`, `size`, and base64-encoded `payload`.
+Key fields: `composition.state` (`normal`/`acquisition_point`/`epoch_start`), `composition.objects[]` (placement instructions cross-referencing `objects[].id` and `windows[].id`), `palettes[].entries[]` (YCrCb+alpha colors), `objects[].sequence` (`complete`/`first`/`last`/`continuation`).
+
+**`--raw-payloads` flag:** When passed, each semantic item includes a `"payload"` field with base64-encoded raw segment bytes. Omitted by default.
 
 ## Code conventions
 

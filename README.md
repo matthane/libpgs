@@ -46,7 +46,7 @@ for track in &by_track {
 ```
 libpgs tracks <file>                       # List PGS tracks
 libpgs extract <file> -o <out> [-t <id>]   # Extract to .sup
-libpgs stream <file> [-t <id>]             # Stream NDJSON to stdout
+libpgs stream <file> [-t <id>] [--raw-payloads]  # Stream NDJSON to stdout
 libpgs bench <file>                        # Benchmark I/O efficiency
 ```
 
@@ -57,26 +57,18 @@ The `stream` command outputs newline-delimited JSON (NDJSON) to stdout, allowing
 The first line is a track discovery message with all available metadata:
 
 ```json
-{"type":"tracks","tracks":[{"track_id":3,"language":"eng","container":"Matroska","name":"English Subtitles","flag_default":true,"flag_forced":false,"display_set_count":1234,"has_cues":true}]}
+{"type":"tracks","tracks":[{"track_id":3,"language":"eng","container":"Matroska","name":"English Subtitles","is_default":true,"is_forced":false,"display_set_count":1234,"indexed":true}]}
 ```
 
-Track fields:
-- `track_id` — numeric track identifier
-- `language` — language code (nullable)
-- `container` — `"Matroska"` or `"M2TS"`
-- `name` — track name from MKV TrackName (nullable, MKV only)
-- `flag_default` — whether the track is flagged as default (nullable, MKV only)
-- `flag_forced` — whether the track is flagged as forced (nullable, MKV only)
-- `display_set_count` — total number of display sets, from MKV Tags NUMBER_OF_FRAMES (nullable, MKV only)
-- `has_cues` — whether the container has cue/index entries for this track (nullable, MKV only)
-
-Each subsequent line is a display set with its per-track index:
+Each subsequent line is a display set with fully parsed segment data organized into semantic sections — composition, windows, palettes, and objects:
 
 ```json
-{"type":"display_set","track_id":3,"index":0,"pts":311580,"pts_ms":3462.0000,"composition_state":"EpochStart","segments":[...]}
+{"type":"display_set","track_id":3,"index":0,"pts":311580,"pts_ms":3462.0000,"composition":{"number":1,"state":"epoch_start","video_width":1920,"video_height":1080,"palette_only":false,"palette_id":0,"objects":[{"object_id":0,"window_id":0,"x":773,"y":108,"crop":null}]},"windows":[{"id":0,"x":773,"y":108,"width":377,"height":43}],"palettes":[{"id":0,"version":0,"entries":[{"id":0,"luminance":16,"cr":128,"cb":128,"alpha":0}]}],"objects":[{"id":0,"version":0,"sequence":"complete","data_length":8635,"width":377,"height":43}]}
 ```
 
-The `index` field is a 0-based per-track sequence number. Combined with `display_set_count` from the tracks header, consumers can calculate extraction progress.
+The `index` field is a 0-based per-track sequence number. Combined with `display_set_count` from the tracks header, consumers can calculate extraction progress. Pass `--raw-payloads` to include base64-encoded raw segment bytes alongside the parsed data.
+
+See [docs/STREAMING.md](docs/STREAMING.md) for the complete schema reference, field tables, cross-reference diagram, and usage examples.
 
 Example Python consumer:
 
@@ -97,13 +89,15 @@ for line in proc.stdout:
         for t in msg["tracks"]:
             tracks[t["track_id"]] = t
             print(f"Track {t['track_id']}: {t.get('name') or t.get('language', '?')}"
-                  f" ({'default' if t.get('flag_default') else 'non-default'})")
+                  f" ({'default' if t.get('is_default') else 'non-default'})")
     elif msg["type"] == "display_set":
         tid = msg["track_id"]
         total = tracks[tid].get("display_set_count")
         progress = f" ({msg['index']+1}/{total})" if total else ""
+        comp = msg.get("composition") or {}
+        n_objects = len(msg.get("objects", []))
         print(f"Track {tid} @ {msg['pts_ms']:.1f}ms — "
-              f"{len(msg['segments'])} segments{progress}")
+              f"{comp.get('state', '?')} {n_objects} objects{progress}")
 ```
 
 ## License
