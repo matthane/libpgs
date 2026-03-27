@@ -39,7 +39,7 @@ fn print_usage() {
     eprintln!("  libpgs tracks <file>                      List PGS tracks");
     eprintln!("  libpgs extract <file> -o <output.sup>     Extract all PGS tracks");
     eprintln!("  libpgs extract <file> -t <id> -o <out>    Extract specific track");
-    eprintln!("  libpgs stream <file> [-t <id>]            Stream PGS segments to stdout");
+    eprintln!("  libpgs stream <file> [-t <id>] [--raw-payloads]  Stream PGS data as NDJSON");
     eprintln!("  libpgs bench <file>                       Benchmark I/O efficiency");
     eprintln!("  libpgs help                               Show this help");
     eprintln!();
@@ -212,12 +212,13 @@ fn parse_track_ids(value: &str) -> Vec<u32> {
 
 fn cmd_stream(args: &[String]) -> Result<(), libpgs::error::PgsError> {
     if args.is_empty() {
-        eprintln!("Usage: libpgs stream <file> [-t <track_id>[,<track_id>...]]");
+        eprintln!("Usage: libpgs stream <file> [-t <track_id>[,<track_id>...]] [--raw-payloads]");
         process::exit(1);
     }
 
     let input = PathBuf::from(&args[0]);
     let mut track_ids: Vec<u32> = Vec::new();
+    let mut raw_payloads = false;
 
     let mut i = 1;
     while i < args.len() {
@@ -229,6 +230,9 @@ fn cmd_stream(args: &[String]) -> Result<(), libpgs::error::PgsError> {
                     process::exit(1);
                 }
                 track_ids.extend(parse_track_ids(&args[i]));
+            }
+            "--raw-payloads" => {
+                raw_payloads = true;
             }
             other => {
                 eprintln!("Unknown option: {other}");
@@ -248,14 +252,18 @@ fn cmd_stream(args: &[String]) -> Result<(), libpgs::error::PgsError> {
 
     // Stream tracks header + display sets as NDJSON.
     // If the consumer closes the pipe (BrokenPipe), exit cleanly.
-    match stream_ndjson(&mut out, &mut extractor) {
+    match stream_ndjson(&mut out, &mut extractor, raw_payloads) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
         Err(e) => Err(e.into()),
     }
 }
 
-fn stream_ndjson(out: &mut impl Write, extractor: &mut libpgs::Extractor) -> std::io::Result<()> {
+fn stream_ndjson(
+    out: &mut impl Write,
+    extractor: &mut libpgs::Extractor,
+    raw_payloads: bool,
+) -> std::io::Result<()> {
     // Emit tracks header as first line.
     let tracks = extractor.tracks();
     write!(out, "{{\"type\":\"tracks\",\"tracks\":[")?;
@@ -266,8 +274,8 @@ fn stream_ndjson(out: &mut impl Write, extractor: &mut libpgs::Extractor) -> std
         write!(
             out,
             "{{\"track_id\":{},\"language\":{},\"container\":\"{}\",\
-             \"name\":{},\"flag_default\":{},\"flag_forced\":{},\"display_set_count\":{},\
-             \"has_cues\":{}}}",
+             \"name\":{},\"is_default\":{},\"is_forced\":{},\"display_set_count\":{},\
+             \"indexed\":{}}}",
             track.track_id,
             json_string_or_null(track.language.as_deref()),
             container_name(track.container),
@@ -295,32 +303,223 @@ fn stream_ndjson(out: &mut impl Write, extractor: &mut libpgs::Extractor) -> std
         write!(
             out,
             "{{\"type\":\"display_set\",\"track_id\":{},\"index\":{},\
-             \"pts\":{},\"pts_ms\":{:.4},\"composition_state\":\"{}\",\"segments\":[",
-            tds.track_id,
-            current_index,
-            ds.pts,
-            ds.pts_ms,
-            composition_state_name(ds.composition_state),
+             \"pts\":{},\"pts_ms\":{:.4},",
+            tds.track_id, current_index, ds.pts, ds.pts_ms,
         )?;
 
-        for (si, seg) in ds.segments.iter().enumerate() {
-            if si > 0 {
-                write!(out, ",")?;
-            }
-            write!(
-                out,
-                "{{\"type\":\"{}\",\"pts\":{},\"dts\":{},\"size\":{},\"payload\":\"{}\"}}",
-                segment_type_name(seg.segment_type),
-                seg.pts,
-                seg.dts,
-                seg.payload.len(),
-                base64_encode(&seg.payload),
-            )?;
-        }
+        // -- composition (from PCS) --
+        write_composition(out, &ds.segments, raw_payloads)?;
+        write!(out, ",")?;
 
-        writeln!(out, "]}}")?;
+        // -- windows (from WDS) --
+        write_windows(out, &ds.segments, raw_payloads)?;
+        write!(out, ",")?;
+
+        // -- palettes (from PDS) --
+        write_palettes(out, &ds.segments, raw_payloads)?;
+        write!(out, ",")?;
+
+        // -- objects (from ODS) --
+        write_objects(out, &ds.segments, raw_payloads)?;
+
+        writeln!(out, "}}")?;
         out.flush()?;
     }
+
+    Ok(())
+}
+
+fn write_composition(
+    out: &mut impl Write,
+    segments: &[libpgs::pgs::PgsSegment],
+    raw_payloads: bool,
+) -> std::io::Result<()> {
+    use libpgs::pgs::segment::SegmentType;
+
+    let pcs_seg = segments
+        .iter()
+        .find(|s| s.segment_type == SegmentType::PresentationComposition);
+
+    let Some(seg) = pcs_seg else {
+        write!(out, "\"composition\":null")?;
+        return Ok(());
+    };
+
+    let Some(pcs) = seg.parse_pcs() else {
+        if raw_payloads {
+            write!(
+                out,
+                "\"composition\":{{\"payload\":\"{}\"}}",
+                base64_encode(&seg.payload)
+            )?;
+        } else {
+            write!(out, "\"composition\":null")?;
+        }
+        return Ok(());
+    };
+
+    write!(
+        out,
+        "\"composition\":{{\"number\":{},\"state\":\"{}\",\
+         \"video_width\":{},\"video_height\":{},\
+         \"palette_only\":{},\"palette_id\":{},\"objects\":[",
+        pcs.composition_number,
+        composition_state_name(pcs.composition_state),
+        pcs.video_width,
+        pcs.video_height,
+        pcs.palette_only,
+        pcs.palette_id,
+    )?;
+
+    for (ci, obj) in pcs.objects.iter().enumerate() {
+        if ci > 0 {
+            write!(out, ",")?;
+        }
+        write!(
+            out,
+            "{{\"object_id\":{},\"window_id\":{},\"x\":{},\"y\":{},\"crop\":",
+            obj.object_id, obj.window_id, obj.x, obj.y,
+        )?;
+        match &obj.crop {
+            Some(crop) => write!(
+                out,
+                "{{\"x\":{},\"y\":{},\"width\":{},\"height\":{}}}",
+                crop.x, crop.y, crop.width, crop.height,
+            )?,
+            None => write!(out, "null")?,
+        }
+        write!(out, "}}")?;
+    }
+
+    write!(out, "]")?;
+    if raw_payloads {
+        write!(out, ",\"payload\":\"{}\"", base64_encode(&seg.payload))?;
+    }
+    write!(out, "}}")?;
+
+    Ok(())
+}
+
+fn write_windows(
+    out: &mut impl Write,
+    segments: &[libpgs::pgs::PgsSegment],
+    raw_payloads: bool,
+) -> std::io::Result<()> {
+    use libpgs::pgs::segment::SegmentType;
+
+    write!(out, "\"windows\":[")?;
+    let mut first = true;
+    for seg in segments
+        .iter()
+        .filter(|s| s.segment_type == SegmentType::WindowDefinition)
+    {
+        if let Some(wds) = seg.parse_wds() {
+            for win in &wds.windows {
+                if !first {
+                    write!(out, ",")?;
+                }
+                first = false;
+                write!(
+                    out,
+                    "{{\"id\":{},\"x\":{},\"y\":{},\"width\":{},\"height\":{}",
+                    win.id, win.x, win.y, win.width, win.height,
+                )?;
+                if raw_payloads {
+                    write!(out, ",\"payload\":\"{}\"", base64_encode(&seg.payload))?;
+                }
+                write!(out, "}}")?;
+            }
+        }
+    }
+    write!(out, "]")?;
+
+    Ok(())
+}
+
+fn write_palettes(
+    out: &mut impl Write,
+    segments: &[libpgs::pgs::PgsSegment],
+    raw_payloads: bool,
+) -> std::io::Result<()> {
+    use libpgs::pgs::segment::SegmentType;
+
+    write!(out, "\"palettes\":[")?;
+    let mut first = true;
+    for seg in segments
+        .iter()
+        .filter(|s| s.segment_type == SegmentType::PaletteDefinition)
+    {
+        if let Some(pds) = seg.parse_pds() {
+            if !first {
+                write!(out, ",")?;
+            }
+            first = false;
+            write!(
+                out,
+                "{{\"id\":{},\"version\":{},\"entries\":[",
+                pds.id, pds.version,
+            )?;
+            for (ei, entry) in pds.entries.iter().enumerate() {
+                if ei > 0 {
+                    write!(out, ",")?;
+                }
+                write!(
+                    out,
+                    "{{\"id\":{},\"luminance\":{},\"cr\":{},\"cb\":{},\"alpha\":{}}}",
+                    entry.id, entry.luminance, entry.cr, entry.cb, entry.alpha,
+                )?;
+            }
+            write!(out, "]")?;
+            if raw_payloads {
+                write!(out, ",\"payload\":\"{}\"", base64_encode(&seg.payload))?;
+            }
+            write!(out, "}}")?;
+        }
+    }
+    write!(out, "]")?;
+
+    Ok(())
+}
+
+fn write_objects(
+    out: &mut impl Write,
+    segments: &[libpgs::pgs::PgsSegment],
+    raw_payloads: bool,
+) -> std::io::Result<()> {
+    use libpgs::pgs::segment::SegmentType;
+
+    write!(out, "\"objects\":[")?;
+    let mut first = true;
+    for seg in segments
+        .iter()
+        .filter(|s| s.segment_type == SegmentType::ObjectDefinition)
+    {
+        if let Some(ods) = seg.parse_ods() {
+            if !first {
+                write!(out, ",")?;
+            }
+            first = false;
+            write!(
+                out,
+                "{{\"id\":{},\"version\":{},\"sequence\":\"{}\",\"data_length\":{}",
+                ods.id,
+                ods.version,
+                ods.sequence.as_str(),
+                ods.data_length,
+            )?;
+            if let Some(w) = ods.width {
+                write!(out, ",\"width\":{}", w)?;
+            }
+            if let Some(h) = ods.height {
+                write!(out, ",\"height\":{}", h)?;
+            }
+            if raw_payloads {
+                write!(out, ",\"payload\":\"{}\"", base64_encode(&seg.payload))?;
+            }
+            write!(out, "}}")?;
+        }
+    }
+    write!(out, "]")?;
 
     Ok(())
 }
@@ -366,19 +565,9 @@ fn container_name(c: libpgs::ContainerFormat) -> &'static str {
 
 fn composition_state_name(cs: libpgs::pgs::segment::CompositionState) -> &'static str {
     match cs {
-        libpgs::pgs::segment::CompositionState::Normal => "Normal",
-        libpgs::pgs::segment::CompositionState::AcquisitionPoint => "AcquisitionPoint",
-        libpgs::pgs::segment::CompositionState::EpochStart => "EpochStart",
-    }
-}
-
-fn segment_type_name(st: libpgs::pgs::segment::SegmentType) -> &'static str {
-    match st {
-        libpgs::pgs::segment::SegmentType::PresentationComposition => "PresentationComposition",
-        libpgs::pgs::segment::SegmentType::WindowDefinition => "WindowDefinition",
-        libpgs::pgs::segment::SegmentType::PaletteDefinition => "PaletteDefinition",
-        libpgs::pgs::segment::SegmentType::ObjectDefinition => "ObjectDefinition",
-        libpgs::pgs::segment::SegmentType::EndOfDisplaySet => "EndOfDisplaySet",
+        libpgs::pgs::segment::CompositionState::Normal => "normal",
+        libpgs::pgs::segment::CompositionState::AcquisitionPoint => "acquisition_point",
+        libpgs::pgs::segment::CompositionState::EpochStart => "epoch_start",
     }
 }
 

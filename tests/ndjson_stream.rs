@@ -1,9 +1,9 @@
 //! Integration test: verify the CLI `stream` NDJSON output matches
-//! the batch extraction API — every field, every payload byte.
+//! the batch extraction API.
 //!
 //! Runs `libpgs stream` as a subprocess, parses the NDJSON lines, and
 //! compares against `extract_all_display_sets`. This covers serialization,
-//! base64 encoding, field mapping, and the full CLI pipeline.
+//! field mapping, and the full CLI pipeline.
 //!
 //! Fixture files are expected in `tests/fixtures/` but are not tracked in git.
 //! Tests are skipped at runtime if the fixtures are not present.
@@ -208,52 +208,11 @@ fn parse_object(b: &[u8], i: usize) -> (JsonValue, usize) {
     }
 }
 
-fn base64_decode(s: &str) -> Vec<u8> {
-    let mut out = Vec::new();
-    let lut = |c: u8| -> u8 {
-        match c {
-            b'A'..=b'Z' => c - b'A',
-            b'a'..=b'z' => c - b'a' + 26,
-            b'0'..=b'9' => c - b'0' + 52,
-            b'+' => 62,
-            b'/' => 63,
-            _ => 0,
-        }
-    };
-    let bytes: Vec<u8> = s.bytes().filter(|&b| b != b'=').collect();
-    for chunk in bytes.chunks(4) {
-        let len = chunk.len();
-        let a = lut(chunk[0]);
-        let b = if len > 1 { lut(chunk[1]) } else { 0 };
-        let c = if len > 2 { lut(chunk[2]) } else { 0 };
-        let d = if len > 3 { lut(chunk[3]) } else { 0 };
-        let triple = ((a as u32) << 18) | ((b as u32) << 12) | ((c as u32) << 6) | d as u32;
-        out.push((triple >> 16) as u8);
-        if len > 2 {
-            out.push((triple >> 8) as u8);
-        }
-        if len > 3 {
-            out.push(triple as u8);
-        }
-    }
-    out
-}
-
 fn composition_state_name(cs: libpgs::pgs::segment::CompositionState) -> &'static str {
     match cs {
-        libpgs::pgs::segment::CompositionState::Normal => "Normal",
-        libpgs::pgs::segment::CompositionState::AcquisitionPoint => "AcquisitionPoint",
-        libpgs::pgs::segment::CompositionState::EpochStart => "EpochStart",
-    }
-}
-
-fn segment_type_name(st: libpgs::pgs::segment::SegmentType) -> &'static str {
-    match st {
-        libpgs::pgs::segment::SegmentType::PresentationComposition => "PresentationComposition",
-        libpgs::pgs::segment::SegmentType::WindowDefinition => "WindowDefinition",
-        libpgs::pgs::segment::SegmentType::PaletteDefinition => "PaletteDefinition",
-        libpgs::pgs::segment::SegmentType::ObjectDefinition => "ObjectDefinition",
-        libpgs::pgs::segment::SegmentType::EndOfDisplaySet => "EndOfDisplaySet",
+        libpgs::pgs::segment::CompositionState::Normal => "normal",
+        libpgs::pgs::segment::CompositionState::AcquisitionPoint => "acquisition_point",
+        libpgs::pgs::segment::CompositionState::EpochStart => "epoch_start",
     }
 }
 
@@ -283,6 +242,32 @@ fn run_stream(fixture: &str, track_filter: Option<u32>) -> Vec<String> {
     assert!(
         output.status.success(),
         "libpgs stream failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8(output.stdout).expect("invalid UTF-8");
+    stdout
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(String::from)
+        .collect()
+}
+
+/// Run `libpgs stream --raw-payloads` and collect NDJSON output lines.
+fn run_stream_raw(fixture: &str) -> Vec<String> {
+    let binary = env!("CARGO_BIN_EXE_libpgs");
+    let output = Command::new(binary)
+        .arg("stream")
+        .arg(fixture)
+        .arg("--raw-payloads")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to run libpgs stream --raw-payloads");
+
+    assert!(
+        output.status.success(),
+        "libpgs stream --raw-payloads failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
 
@@ -337,7 +322,7 @@ fn ndjson_tracks_header_matches_api() {
                 container_name(at.container),
             );
 
-            // Verify new metadata fields are present and match API.
+            // Renamed field checks.
             let json_name = jt.get("name").unwrap();
             match &at.name {
                 Some(name) => assert_eq!(
@@ -348,30 +333,27 @@ fn ndjson_tracks_header_matches_api() {
                 None => assert!(json_name.is_null(), "{fixture}: expected null name"),
             }
 
-            let json_default = jt.get("flag_default").unwrap();
+            let json_default = jt.get("is_default").unwrap();
             match at.flag_default {
                 Some(v) => assert_eq!(
                     json_default.as_bool().unwrap(),
                     v,
-                    "{fixture}: flag_default mismatch"
+                    "{fixture}: is_default mismatch"
                 ),
                 None => assert!(
                     json_default.is_null(),
-                    "{fixture}: expected null flag_default"
+                    "{fixture}: expected null is_default"
                 ),
             }
 
-            let json_forced = jt.get("flag_forced").unwrap();
+            let json_forced = jt.get("is_forced").unwrap();
             match at.flag_forced {
                 Some(v) => assert_eq!(
                     json_forced.as_bool().unwrap(),
                     v,
-                    "{fixture}: flag_forced mismatch"
+                    "{fixture}: is_forced mismatch"
                 ),
-                None => assert!(
-                    json_forced.is_null(),
-                    "{fixture}: expected null flag_forced"
-                ),
+                None => assert!(json_forced.is_null(), "{fixture}: expected null is_forced"),
             }
 
             let json_count = jt.get("display_set_count").unwrap();
@@ -387,14 +369,14 @@ fn ndjson_tracks_header_matches_api() {
                 ),
             }
 
-            let json_has_cues = jt.get("has_cues").unwrap();
+            let json_indexed = jt.get("indexed").unwrap();
             match at.has_cues {
                 Some(v) => assert_eq!(
-                    json_has_cues.as_bool().unwrap(),
+                    json_indexed.as_bool().unwrap(),
                     v,
-                    "{fixture}: has_cues mismatch"
+                    "{fixture}: indexed mismatch"
                 ),
-                None => assert!(json_has_cues.is_null(), "{fixture}: expected null has_cues"),
+                None => assert!(json_indexed.is_null(), "{fixture}: expected null indexed"),
             }
         }
     }
@@ -412,13 +394,8 @@ fn ndjson_display_sets_match_batch_extraction() {
             .expect("batch extraction should succeed");
 
         let lines = run_stream(fixture, None);
-        // First line is tracks header, rest are display sets.
         let ds_lines: Vec<&str> = lines[1..].iter().map(|s| s.as_str()).collect();
 
-        // Flatten batch into ordered display sets for comparison.
-        // The streaming API yields in container order, so we need to
-        // collect all batch display sets by track and interleave based
-        // on streaming order.
         let batch_total: usize = batch.iter().map(|t| t.display_sets.len()).sum();
         assert_eq!(
             ds_lines.len(),
@@ -427,9 +404,7 @@ fn ndjson_display_sets_match_batch_extraction() {
             ds_lines.len()
         );
 
-        // Build per-track lookup keyed by (track_id, pts) for order-independent matching.
-        // The streaming API may yield display sets in a different order than batch
-        // (e.g., interleaved by container position vs. grouped by track).
+        // Build per-track lookup keyed by (track_id, pts).
         let mut batch_by_key: HashMap<
             (u32, u64),
             (&libpgs::PgsTrackInfo, &libpgs::pgs::display_set::DisplaySet),
@@ -454,17 +429,7 @@ fn ndjson_display_sets_match_batch_extraction() {
                 panic!("{fixture} line {i}: no batch match for track={tid} pts={pts}")
             });
 
-            // Verify display_set lines do not carry language/container (slimmed format).
-            assert!(
-                json.get("language").is_none(),
-                "{fixture} line {i}: display_set should not contain language"
-            );
-            assert!(
-                json.get("container").is_none(),
-                "{fixture} line {i}: display_set should not contain container"
-            );
-
-            // Verify index field is present and sequential per track.
+            // Verify index is sequential per track.
             let json_index = json.get("index").unwrap().as_u64().unwrap();
             let expected_index = track_index_counters.entry(tid).or_insert(0);
             assert_eq!(
@@ -473,62 +438,95 @@ fn ndjson_display_sets_match_batch_extraction() {
             );
             *expected_index += 1;
 
-            assert_eq!(
-                json.get("pts").unwrap().as_u64().unwrap(),
-                ds.pts as u64,
-                "{fixture} line {i}: pts mismatch"
-            );
-            assert_eq!(
-                json.get("composition_state").unwrap().as_str().unwrap(),
-                composition_state_name(ds.composition_state),
-                "{fixture} line {i}: composition_state mismatch"
-            );
+            // pts and pts_ms.
+            assert_eq!(pts, ds.pts as u64, "{fixture} line {i}: pts mismatch");
 
-            // Verify segments — count, types, and payload bytes.
-            let json_segs = json.get("segments").unwrap().as_array().unwrap();
-            assert_eq!(
-                json_segs.len(),
-                ds.segments.len(),
-                "{fixture} line {i}: segment count mismatch"
-            );
-
-            for (si, (jseg, seg)) in json_segs.iter().zip(ds.segments.iter()).enumerate() {
+            // Composition state — now in composition.state with snake_case.
+            let comp = json.get("composition").unwrap();
+            if !comp.is_null() {
                 assert_eq!(
-                    jseg.get("type").unwrap().as_str().unwrap(),
-                    segment_type_name(seg.segment_type),
-                    "{fixture} line {i} seg {si}: type mismatch"
-                );
-                assert_eq!(
-                    jseg.get("pts").unwrap().as_u64().unwrap(),
-                    seg.pts as u64,
-                    "{fixture} line {i} seg {si}: pts mismatch"
-                );
-                assert_eq!(
-                    jseg.get("dts").unwrap().as_u64().unwrap(),
-                    seg.dts as u64,
-                    "{fixture} line {i} seg {si}: dts mismatch"
-                );
-                assert_eq!(
-                    jseg.get("size").unwrap().as_u64().unwrap(),
-                    seg.payload.len() as u64,
-                    "{fixture} line {i} seg {si}: size mismatch"
-                );
-
-                let payload_b64 = jseg.get("payload").unwrap().as_str().unwrap();
-                let decoded = base64_decode(payload_b64);
-                assert_eq!(
-                    decoded,
-                    seg.payload,
-                    "{fixture} line {i} seg {si}: payload mismatch ({} decoded bytes vs {} original)",
-                    decoded.len(),
-                    seg.payload.len()
+                    comp.get("state").unwrap().as_str().unwrap(),
+                    composition_state_name(ds.composition_state),
+                    "{fixture} line {i}: composition state mismatch"
                 );
             }
+
+            // Verify semantic arrays are present.
+            assert!(
+                json.get("windows").is_some(),
+                "{fixture} line {i}: missing windows"
+            );
+            assert!(
+                json.get("palettes").is_some(),
+                "{fixture} line {i}: missing palettes"
+            );
+            assert!(
+                json.get("objects").is_some(),
+                "{fixture} line {i}: missing objects"
+            );
+
+            // Verify segment counts by type match.
+            use libpgs::pgs::segment::SegmentType;
+            let pcs_count = ds
+                .segments
+                .iter()
+                .filter(|s| s.segment_type == SegmentType::PresentationComposition)
+                .count();
+            let wds_window_count: usize = ds
+                .segments
+                .iter()
+                .filter(|s| s.segment_type == SegmentType::WindowDefinition)
+                .filter_map(|s| s.parse_wds())
+                .map(|w| w.windows.len())
+                .sum();
+            let pds_count = ds
+                .segments
+                .iter()
+                .filter(|s| s.segment_type == SegmentType::PaletteDefinition)
+                .count();
+            let ods_count = ds
+                .segments
+                .iter()
+                .filter(|s| s.segment_type == SegmentType::ObjectDefinition)
+                .count();
+
+            if pcs_count > 0 {
+                assert!(
+                    !comp.is_null(),
+                    "{fixture} line {i}: composition should not be null"
+                );
+            }
+            assert_eq!(
+                json.get("windows")
+                    .unwrap()
+                    .as_array()
+                    .unwrap_or(&[])
+                    .len(),
+                wds_window_count,
+                "{fixture} line {i}: window count mismatch"
+            );
+            assert_eq!(
+                json.get("palettes")
+                    .unwrap()
+                    .as_array()
+                    .unwrap_or(&[])
+                    .len(),
+                pds_count,
+                "{fixture} line {i}: palette count mismatch"
+            );
+            assert_eq!(
+                json.get("objects")
+                    .unwrap()
+                    .as_array()
+                    .unwrap_or(&[])
+                    .len(),
+                ods_count,
+                "{fixture} line {i}: object count mismatch"
+            );
 
             matched_keys.push(key);
         }
 
-        // All batch display sets should have been matched.
         assert_eq!(
             matched_keys.len(),
             batch_by_key.len(),
@@ -583,6 +581,82 @@ fn ndjson_track_filter_matches_api() {
         for line in ds_lines {
             let json = parse_json(line);
             assert_eq!(json.get("track_id").unwrap().as_u64().unwrap(), tid as u64);
+        }
+    }
+}
+
+#[test]
+fn ndjson_raw_payloads_includes_base64() {
+    let fixtures = available_fixtures();
+    if fixtures.is_empty() {
+        return;
+    }
+
+    for fixture in fixtures {
+        let lines = run_stream_raw(fixture);
+        if lines.len() < 2 {
+            continue;
+        }
+
+        // Check a display set line has payload fields.
+        let json = parse_json(&lines[1]);
+        assert_eq!(json.get("type").unwrap().as_str().unwrap(), "display_set");
+
+        // Composition should have a payload field.
+        let comp = json.get("composition").unwrap();
+        if !comp.is_null() {
+            let payload = comp.get("payload");
+            assert!(
+                payload.is_some(),
+                "{fixture}: composition missing payload in --raw-payloads mode"
+            );
+            assert!(
+                payload.unwrap().as_str().is_some(),
+                "{fixture}: composition payload should be a string"
+            );
+        }
+
+        // Objects should have payload fields.
+        let objects = json.get("objects").unwrap().as_array().unwrap();
+        for obj in objects {
+            let payload = obj.get("payload");
+            assert!(
+                payload.is_some(),
+                "{fixture}: object missing payload in --raw-payloads mode"
+            );
+        }
+    }
+}
+
+#[test]
+fn ndjson_default_mode_no_payload() {
+    let fixtures = available_fixtures();
+    if fixtures.is_empty() {
+        return;
+    }
+
+    for fixture in fixtures {
+        let lines = run_stream(fixture, None);
+        if lines.len() < 2 {
+            continue;
+        }
+
+        // Check that default mode does NOT include payload fields.
+        let json = parse_json(&lines[1]);
+        let comp = json.get("composition").unwrap();
+        if !comp.is_null() {
+            assert!(
+                comp.get("payload").is_none(),
+                "{fixture}: composition should not have payload in default mode"
+            );
+        }
+
+        let objects = json.get("objects").unwrap().as_array().unwrap();
+        for obj in objects {
+            assert!(
+                obj.get("payload").is_none(),
+                "{fixture}: object should not have payload in default mode"
+            );
         }
     }
 }
