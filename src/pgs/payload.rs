@@ -318,6 +318,27 @@ impl OdsData {
 }
 
 // ---------------------------------------------------------------------------
+// ODS RLE data extraction
+// ---------------------------------------------------------------------------
+
+/// Extract the RLE data bytes from an ODS segment payload.
+///
+/// For Complete/First segments, RLE starts at byte 11 (after 7-byte header + 4-byte dimensions).
+/// For Continuation/Last segments, RLE starts at byte 7 (after 7-byte header, no dimensions).
+///
+/// Returns `None` if the payload is too short.
+pub fn ods_rle_data(payload: &[u8], sequence: SequenceFlag) -> Option<&[u8]> {
+    let offset = match sequence {
+        SequenceFlag::Complete | SequenceFlag::First => 11,
+        SequenceFlag::Continuation | SequenceFlag::Last => 7,
+    };
+    if payload.len() < offset {
+        return None;
+    }
+    Some(&payload[offset..])
+}
+
+// ---------------------------------------------------------------------------
 // ParsedPayload — dispatch enum
 // ---------------------------------------------------------------------------
 
