@@ -43,6 +43,10 @@ fn print_usage() {
     eprintln!("  libpgs bench <file>                       Benchmark I/O efficiency");
     eprintln!("  libpgs help                               Show this help");
     eprintln!();
+    eprintln!("Time range options (extract and stream commands):");
+    eprintln!("  --start TIME    Start extracting from this time (HH:MM:SS, MM:SS, or seconds)");
+    eprintln!("  --end TIME      Stop extracting after this time");
+    eprintln!();
     eprintln!("When extracting all tracks, output files are named <stem>_track<id>.sup");
 }
 
@@ -210,15 +214,45 @@ fn parse_track_ids(value: &str) -> Vec<u32> {
         .collect()
 }
 
+/// Parse a timestamp string into milliseconds.
+///
+/// Accepts: `HH:MM:SS.mmm`, `MM:SS.mmm`, `SS.mmm`, or plain seconds (e.g. `123.456`).
+fn parse_timestamp(s: &str) -> Option<f64> {
+    let parts: Vec<&str> = s.split(':').collect();
+    match parts.len() {
+        1 => {
+            // Plain seconds: "123.456"
+            let secs: f64 = parts[0].parse().ok()?;
+            Some(secs * 1000.0)
+        }
+        2 => {
+            // MM:SS or MM:SS.mmm
+            let mins: f64 = parts[0].parse().ok()?;
+            let secs: f64 = parts[1].parse().ok()?;
+            Some((mins * 60.0 + secs) * 1000.0)
+        }
+        3 => {
+            // HH:MM:SS or HH:MM:SS.mmm
+            let hours: f64 = parts[0].parse().ok()?;
+            let mins: f64 = parts[1].parse().ok()?;
+            let secs: f64 = parts[2].parse().ok()?;
+            Some((hours * 3600.0 + mins * 60.0 + secs) * 1000.0)
+        }
+        _ => None,
+    }
+}
+
 fn cmd_stream(args: &[String]) -> Result<(), libpgs::error::PgsError> {
     if args.is_empty() {
-        eprintln!("Usage: libpgs stream <file> [-t <track_id>[,<track_id>...]] [--raw-payloads]");
+        eprintln!("Usage: libpgs stream <file> [-t <id>] [--start TIME] [--end TIME] [--raw-payloads]");
         process::exit(1);
     }
 
     let input = PathBuf::from(&args[0]);
     let mut track_ids: Vec<u32> = Vec::new();
     let mut raw_payloads = false;
+    let mut start_ms: Option<f64> = None;
+    let mut end_ms: Option<f64> = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -234,6 +268,28 @@ fn cmd_stream(args: &[String]) -> Result<(), libpgs::error::PgsError> {
             "--raw-payloads" => {
                 raw_payloads = true;
             }
+            "--start" => {
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("Missing value for --start");
+                    process::exit(1);
+                }
+                start_ms = Some(parse_timestamp(&args[i]).unwrap_or_else(|| {
+                    eprintln!("Invalid timestamp for --start: {}", args[i]);
+                    process::exit(1);
+                }));
+            }
+            "--end" => {
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("Missing value for --end");
+                    process::exit(1);
+                }
+                end_ms = Some(parse_timestamp(&args[i]).unwrap_or_else(|| {
+                    eprintln!("Invalid timestamp for --end: {}", args[i]);
+                    process::exit(1);
+                }));
+            }
             other => {
                 eprintln!("Unknown option: {other}");
                 process::exit(1);
@@ -245,6 +301,9 @@ fn cmd_stream(args: &[String]) -> Result<(), libpgs::error::PgsError> {
     let mut extractor = libpgs::Extractor::open(&input)?;
     if !track_ids.is_empty() {
         extractor = extractor.with_track_filter(&track_ids);
+    }
+    if start_ms.is_some() || end_ms.is_some() {
+        extractor = extractor.with_time_range(start_ms, end_ms);
     }
 
     let stdout = std::io::stdout();
@@ -662,13 +721,15 @@ fn base64_encode(data: &[u8]) -> String {
 
 fn cmd_extract(args: &[String]) -> Result<(), libpgs::error::PgsError> {
     if args.is_empty() {
-        eprintln!("Usage: libpgs extract <file> -o <output.sup> [-t <track_id>[,<track_id>...]]");
+        eprintln!("Usage: libpgs extract <file> -o <out> [-t <id>] [--start TIME] [--end TIME]");
         process::exit(1);
     }
 
     let input = PathBuf::from(&args[0]);
     let mut output: Option<PathBuf> = None;
     let mut track_ids: Vec<u32> = Vec::new();
+    let mut start_ms: Option<f64> = None;
+    let mut end_ms: Option<f64> = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -689,6 +750,28 @@ fn cmd_extract(args: &[String]) -> Result<(), libpgs::error::PgsError> {
                 }
                 track_ids.extend(parse_track_ids(&args[i]));
             }
+            "--start" => {
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("Missing value for --start");
+                    process::exit(1);
+                }
+                start_ms = Some(parse_timestamp(&args[i]).unwrap_or_else(|| {
+                    eprintln!("Invalid timestamp for --start: {}", args[i]);
+                    process::exit(1);
+                }));
+            }
+            "--end" => {
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("Missing value for --end");
+                    process::exit(1);
+                }
+                end_ms = Some(parse_timestamp(&args[i]).unwrap_or_else(|| {
+                    eprintln!("Invalid timestamp for --end: {}", args[i]);
+                    process::exit(1);
+                }));
+            }
             other => {
                 eprintln!("Unknown option: {other}");
                 process::exit(1);
@@ -702,6 +785,8 @@ fn cmd_extract(args: &[String]) -> Result<(), libpgs::error::PgsError> {
         process::exit(1);
     });
 
+    let has_time_range = start_ms.is_some() || end_ms.is_some();
+
     let start = Instant::now();
 
     if track_ids.len() == 1 {
@@ -709,7 +794,19 @@ fn cmd_extract(args: &[String]) -> Result<(), libpgs::error::PgsError> {
         let tid = track_ids[0];
         println!("Extracting PGS track {} from: {}", tid, input.display());
 
-        let display_sets = libpgs::extract_display_sets(&input, Some(tid))?;
+        // Use Extractor API when time range is set (batch helpers don't support it).
+        let display_sets = if has_time_range {
+            let extractor = libpgs::Extractor::open(&input)?
+                .with_track_filter(&[tid])
+                .with_time_range(start_ms, end_ms);
+            extractor
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .map(|tds| tds.display_set)
+                .collect::<Vec<_>>()
+        } else {
+            libpgs::extract_display_sets(&input, Some(tid))?
+        };
         let elapsed_extract = start.elapsed();
 
         let total_segments: usize = display_sets.iter().map(|ds| ds.segments.len()).sum();
@@ -742,17 +839,26 @@ fn cmd_extract(args: &[String]) -> Result<(), libpgs::error::PgsError> {
             );
         }
 
-        let track_results = if track_ids.is_empty() {
+        let track_results = if track_ids.is_empty() && !has_time_range {
             libpgs::extract_all_display_sets(&input)?
         } else {
-            libpgs::Extractor::open(&input)?
-                .with_track_filter(&track_ids)
-                .collect_by_track()?
+            let mut ext = libpgs::Extractor::open(&input)?;
+            if !track_ids.is_empty() {
+                ext = ext.with_track_filter(&track_ids);
+            }
+            if has_time_range {
+                ext = ext.with_time_range(start_ms, end_ms);
+            }
+            ext.collect_by_track()?
         };
         let elapsed_extract = start.elapsed();
 
         if track_results.is_empty() {
-            println!("No PGS display sets found.");
+            if has_time_range {
+                println!("No PGS display sets found in the requested time range.");
+            } else {
+                println!("No PGS display sets found.");
+            }
             return Ok(());
         }
 

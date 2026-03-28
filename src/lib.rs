@@ -153,6 +153,8 @@ pub struct Extractor {
     path: PathBuf,
     format: ContainerFormat,
     mkv_strategy: MkvStrategy,
+    time_range_start_ms: Option<f64>,
+    time_range_end_ms: Option<f64>,
 }
 
 impl Extractor {
@@ -197,6 +199,8 @@ impl Extractor {
                     path: path.to_path_buf(),
                     format: ContainerFormat::Matroska,
                     mkv_strategy: MkvStrategy::Auto,
+                    time_range_start_ms: None,
+                    time_range_end_ms: None,
                 })
             }
             format @ (ContainerFormat::M2ts | ContainerFormat::TransportStream) => {
@@ -225,6 +229,8 @@ impl Extractor {
                     path: path.to_path_buf(),
                     format,
                     mkv_strategy: MkvStrategy::Auto,
+                    time_range_start_ms: None,
+                    time_range_end_ms: None,
                 })
             }
             ContainerFormat::Sup => {
@@ -242,6 +248,8 @@ impl Extractor {
                     path: path.to_path_buf(),
                     format: ContainerFormat::Sup,
                     mkv_strategy: MkvStrategy::Auto,
+                    time_range_start_ms: None,
+                    time_range_end_ms: None,
                 })
             }
         }
@@ -302,6 +310,33 @@ impl Extractor {
         }
     }
 
+    /// Restrict extraction to a time range. Chainable.
+    ///
+    /// Display sets with `pts_ms` before `start_ms` are skipped.
+    /// Iteration stops when `pts_ms` exceeds `end_ms`.
+    /// Pass `None` for either bound to leave it open.
+    ///
+    /// For MKV files with Cues, cue points outside the range are filtered out
+    /// entirely (zero I/O). For M2TS and SUP files, the reader seeks to an
+    /// estimated byte position based on bitrate estimation.
+    ///
+    /// Must be called before the first call to `next()`.
+    #[must_use]
+    pub fn with_time_range(mut self, start_ms: Option<f64>, end_ms: Option<f64>) -> Self {
+        if start_ms.is_none() && end_ms.is_none() {
+            return self;
+        }
+        self.time_range_start_ms = start_ms;
+        self.time_range_end_ms = end_ms;
+        match &mut self.inner {
+            ExtractorInner::Mkv(state) => state.set_time_range(start_ms, end_ms),
+            ExtractorInner::M2ts(state) => state.set_time_range(start_ms, end_ms),
+            ExtractorInner::Sup(state) => state.set_time_range(start_ms, end_ms),
+            ExtractorInner::Done => {}
+        }
+        self
+    }
+
     /// Open an MKV file with a specific strategy (no track filter).
     fn open_with_strategy(
         path: &Path,
@@ -340,6 +375,8 @@ impl Extractor {
             path: path.to_path_buf(),
             format: ContainerFormat::Matroska,
             mkv_strategy: strategy,
+            time_range_start_ms: None,
+            time_range_end_ms: None,
         })
     }
 
@@ -380,6 +417,8 @@ impl Extractor {
                     path: path.to_path_buf(),
                     format: fmt,
                     mkv_strategy: MkvStrategy::Auto,
+                    time_range_start_ms: None,
+                    time_range_end_ms: None,
                 })
             }
             ContainerFormat::Sup => {
@@ -395,6 +434,8 @@ impl Extractor {
                         path: path.to_path_buf(),
                         format: ContainerFormat::Sup,
                         mkv_strategy: MkvStrategy::Auto,
+                        time_range_start_ms: None,
+                        time_range_end_ms: None,
                     });
                 }
 
@@ -416,6 +457,8 @@ impl Extractor {
                     path: path.to_path_buf(),
                     format: ContainerFormat::Sup,
                     mkv_strategy: MkvStrategy::Auto,
+                    time_range_start_ms: None,
+                    time_range_end_ms: None,
                 })
             }
         }
@@ -462,11 +505,14 @@ impl Extractor {
     /// partially consumed, this uses parallel extraction with multiple
     /// file handles for maximum throughput.
     pub fn collect_by_track(mut self) -> Result<Vec<TrackDisplaySets>, PgsError> {
-        // Try parallel cues optimization for MKV.
-        if let ExtractorInner::Mkv(ref state) = self.inner
-            && let Some(result) = state.try_collect_parallel()
-        {
-            return result;
+        // Parallel optimization bypasses iterator filtering, so skip when a
+        // time range is set.
+        if self.time_range_start_ms.is_none() && self.time_range_end_ms.is_none() {
+            if let ExtractorInner::Mkv(ref state) = self.inner
+                && let Some(result) = state.try_collect_parallel()
+            {
+                return result;
+            }
         }
 
         // Build track info lookup from the pre-parsed metadata.
@@ -496,27 +542,46 @@ impl Iterator for Extractor {
     type Item = Result<TrackDisplaySet, PgsError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let result = match &mut self.inner {
-            ExtractorInner::Mkv(state) => state.next_display_set(),
-            ExtractorInner::M2ts(state) => state.next_display_set(),
-            ExtractorInner::Sup(state) => state.next_display_set(),
-            ExtractorInner::Done => return None,
-        };
+        loop {
+            let result = match &mut self.inner {
+                ExtractorInner::Mkv(state) => state.next_display_set(),
+                ExtractorInner::M2ts(state) => state.next_display_set(),
+                ExtractorInner::Sup(state) => state.next_display_set(),
+                ExtractorInner::Done => return None,
+            };
 
-        self.update_stats();
+            self.update_stats();
 
-        match result {
-            Some(Ok(tds)) => {
-                self.catalog.push(tds.clone());
-                Some(Ok(tds))
-            }
-            Some(Err(e)) => {
-                self.inner = ExtractorInner::Done;
-                Some(Err(e))
-            }
-            None => {
-                self.inner = ExtractorInner::Done;
-                None
+            match result {
+                Some(Ok(tds)) => {
+                    let pts_ms = tds.display_set.pts_ms;
+
+                    // Past end time — stop iteration entirely.
+                    if let Some(end) = self.time_range_end_ms {
+                        if pts_ms > end {
+                            self.inner = ExtractorInner::Done;
+                            return None;
+                        }
+                    }
+
+                    // Before start time — skip (safety net for estimation overshoot).
+                    if let Some(start) = self.time_range_start_ms {
+                        if pts_ms < start {
+                            continue;
+                        }
+                    }
+
+                    self.catalog.push(tds.clone());
+                    return Some(Ok(tds));
+                }
+                Some(Err(e)) => {
+                    self.inner = ExtractorInner::Done;
+                    return Some(Err(e));
+                }
+                None => {
+                    self.inner = ExtractorInner::Done;
+                    return None;
+                }
             }
         }
     }

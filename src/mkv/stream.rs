@@ -35,6 +35,9 @@ pub(crate) struct MkvExtractorState {
     yielded_count: usize,
     /// Strategy override for benchmarking.
     strategy: MkvStrategy,
+    /// Time range for filtering (milliseconds).
+    time_range_start_ms: Option<f64>,
+    time_range_end_ms: Option<f64>,
 }
 
 /// Block sourcing strategy — each variant is a resumable state.
@@ -132,7 +135,15 @@ impl MkvExtractorState {
             pending: VecDeque::new(),
             yielded_count: 0,
             strategy,
+            time_range_start_ms: None,
+            time_range_end_ms: None,
         })
+    }
+
+    /// Set a time range for filtering cue points and early termination.
+    pub(crate) fn set_time_range(&mut self, start_ms: Option<f64>, end_ms: Option<f64>) {
+        self.time_range_start_ms = start_ms;
+        self.time_range_end_ms = end_ms;
     }
 
     /// Initialize the block source strategy (lazy — called on first iteration).
@@ -146,13 +157,37 @@ impl MkvExtractorState {
             .first_cluster_position
             .ok_or_else(|| PgsError::InvalidMkv("no Clusters found".into()))?;
 
+        // Convert time range from ms to MKV timestamp units for cue point filtering.
+        // MKV timestamp units: time_ns / timestamp_scale. ms → ns: ms * 1_000_000.
+        let start_mkv = self.time_range_start_ms.map(|ms| {
+            (ms * 1_000_000.0 / self.timestamp_scale as f64) as u64
+        });
+        let end_mkv = self.time_range_end_ms.map(|ms| {
+            (ms * 1_000_000.0 / self.timestamp_scale as f64) as u64
+        });
+
         // Auto: use Cues if available, otherwise fall back to Sequential.
         if self.strategy == MkvStrategy::Auto {
             let active_tracks: Vec<u64> = self.assemblers.keys().copied().collect();
             let filtered_cues = self.metadata.cue_points.as_ref().and_then(|cues| {
                 let filtered: Vec<_> = cues
                     .iter()
-                    .filter(|cp| active_tracks.contains(&cp.track_number))
+                    .filter(|cp| {
+                        if !active_tracks.contains(&cp.track_number) {
+                            return false;
+                        }
+                        if let Some(start) = start_mkv {
+                            if cp.time < start {
+                                return false;
+                            }
+                        }
+                        if let Some(end) = end_mkv {
+                            if cp.time > end {
+                                return false;
+                            }
+                        }
+                        true
+                    })
                     .cloned()
                     .collect();
                 if filtered.is_empty() {
@@ -178,9 +213,32 @@ impl MkvExtractorState {
         let file = File::open(&self.path)?;
         self.reader = SeekBufReader::with_capacity(SEQ_BUF_SIZE, file);
 
+        // Estimate start position if duration info is available.
+        let segment_start = first_cluster;
+        let segment_end = self.metadata.layout.segment_data_end;
+        let scan_start = if let Some(start_mkv) = start_mkv {
+            if let Some(duration) = self.metadata.duration {
+                let duration_mkv = duration as u64;
+                if duration_mkv > 0 {
+                    let segment_size = segment_end - segment_start;
+                    let ratio = start_mkv as f64 / duration_mkv as f64;
+                    let estimated = segment_start + (segment_size as f64 * ratio) as u64;
+                    // Back up by 2MB margin to avoid missing boundary subtitles.
+                    let margin = (2 * 1024 * 1024u64).min(segment_size / 100);
+                    estimated.saturating_sub(margin).max(segment_start)
+                } else {
+                    segment_start
+                }
+            } else {
+                segment_start
+            }
+        } else {
+            segment_start
+        };
+
         self.source = MkvBlockSource::SequentialScan {
-            current_position: first_cluster,
-            segment_data_end: self.metadata.layout.segment_data_end,
+            current_position: scan_start,
+            segment_data_end: segment_end,
         };
 
         Ok(())

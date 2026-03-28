@@ -5,6 +5,9 @@ use crate::pgs::segment::{HEADER_SIZE, PGS_MAGIC, PgsSegment, SegmentType};
 use crate::{ContainerFormat, TrackDisplaySet};
 use std::fs::File;
 
+/// How far back from EOF to scan for the last PGS segment header.
+const SUP_TAIL_SCAN: u64 = 64 * 1024;
+
 /// Streaming state machine for reading raw `.sup` files (concatenated PGS segments).
 ///
 /// A `.sup` file contains a single PGS track — segments are read sequentially
@@ -21,6 +24,89 @@ impl SupExtractorState {
             reader,
             assembler: DisplaySetAssembler::new(),
             done: false,
+        }
+    }
+
+    /// Apply a time range for seeking.
+    ///
+    /// Estimates a byte offset based on first/last PTS and seeks the reader.
+    pub(crate) fn set_time_range(&mut self, start_ms: Option<f64>, _end_ms: Option<f64>) {
+        if let Some(start) = start_ms {
+            let file_size = self.reader.file_size().unwrap_or(0);
+            if file_size < HEADER_SIZE as u64 {
+                return;
+            }
+
+            // Read first PTS (bytes 2-5 of file).
+            let first_pts = {
+                let _ = self.reader.seek_to(0);
+                let mut hdr = [0u8; HEADER_SIZE];
+                if self.reader.try_read_exact(&mut hdr).unwrap_or(false)
+                    && hdr[0] == PGS_MAGIC[0]
+                    && hdr[1] == PGS_MAGIC[1]
+                {
+                    u32::from_be_bytes([hdr[2], hdr[3], hdr[4], hdr[5]]) as u64
+                } else {
+                    let _ = self.reader.seek_to(0);
+                    return;
+                }
+            };
+
+            // Read last PTS by scanning backward from EOF.
+            let last_pts = {
+                let scan_start = file_size.saturating_sub(SUP_TAIL_SCAN);
+                let _ = self.reader.seek_to(scan_start);
+                let remaining = (file_size - scan_start) as usize;
+                if let Ok(block) = self.reader.read_bytes(remaining) {
+                    find_last_sup_pts(&block)
+                } else {
+                    None
+                }
+            };
+
+            if let Some(last_pts) = last_pts {
+                let duration = last_pts.saturating_sub(first_pts);
+                if duration > 0 {
+                    let target_pts = (start * 90.0) as u64;
+                    let ratio = target_pts as f64 / duration as f64;
+                    let estimated = (file_size as f64 * ratio) as u64;
+                    // Back up by margin.
+                    let margin = (2 * 1024 * 1024u64).min(file_size / 100);
+                    let seek_to = estimated.saturating_sub(margin);
+                    let _ = self.reader.seek_to(seek_to);
+                    // Scan forward to next PG magic for alignment.
+                    self.scan_to_pg_magic();
+                    return;
+                }
+            }
+
+            // Fallback: start from beginning.
+            let _ = self.reader.seek_to(0);
+        }
+    }
+
+    /// Scan forward to the next PGS segment header (PG magic bytes).
+    fn scan_to_pg_magic(&mut self) {
+        let mut buf = [0u8; 1];
+        loop {
+            match self.reader.try_read_exact(&mut buf) {
+                Ok(true) => {
+                    if buf[0] == PGS_MAGIC[0] {
+                        // Check next byte.
+                        match self.reader.try_read_exact(&mut buf) {
+                            Ok(true) if buf[0] == PGS_MAGIC[1] => {
+                                // Found PG magic — rewind 2 bytes.
+                                let pos = self.reader.position();
+                                let _ = self.reader.seek_to(pos - 2);
+                                return;
+                            }
+                            Ok(true) => continue,
+                            _ => return,
+                        }
+                    }
+                }
+                _ => return,
+            }
         }
     }
 
@@ -105,6 +191,25 @@ impl SupExtractorState {
     pub(crate) fn bytes_read(&self) -> u64 {
         self.reader.bytes_read()
     }
+}
+
+/// Find the last PTS value in a block of SUP data by scanning for PG magic headers.
+fn find_last_sup_pts(data: &[u8]) -> Option<u64> {
+    let mut last_pts = None;
+    let mut i = 0;
+    while i + HEADER_SIZE <= data.len() {
+        if data[i] == PGS_MAGIC[0] && data[i + 1] == PGS_MAGIC[1] {
+            let pts = u32::from_be_bytes([data[i + 2], data[i + 3], data[i + 4], data[i + 5]]);
+            last_pts = Some(pts as u64);
+            // Skip past this header + payload to next segment.
+            let payload_len =
+                u16::from_be_bytes([data[i + 11], data[i + 12]]) as usize;
+            i += HEADER_SIZE + payload_len;
+        } else {
+            i += 1;
+        }
+    }
+    last_pts
 }
 
 #[cfg(test)]
