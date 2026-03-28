@@ -484,11 +484,16 @@ fn ndjson_display_sets_match_batch_extraction() {
                 .iter()
                 .filter(|s| s.segment_type == SegmentType::PaletteDefinition)
                 .count();
-            let ods_count = ds
-                .segments
-                .iter()
-                .filter(|s| s.segment_type == SegmentType::ObjectDefinition)
-                .count();
+            // Count unique object IDs (fragments are grouped).
+            let mut ods_ids: Vec<u16> = Vec::new();
+            for seg in ds.segments.iter().filter(|s| s.segment_type == SegmentType::ObjectDefinition) {
+                if let Some(ods) = seg.parse_ods() {
+                    if !ods_ids.contains(&ods.id) {
+                        ods_ids.push(ods.id);
+                    }
+                }
+            }
+            let ods_count = ods_ids.len();
 
             if pcs_count > 0 {
                 assert!(
@@ -656,6 +661,96 @@ fn ndjson_default_mode_no_payload() {
             assert!(
                 obj.get("payload").is_none(),
                 "{fixture}: object should not have payload in default mode"
+            );
+        }
+    }
+}
+
+/// Simple base64 decoder for tests.
+fn base64_decode(s: &str) -> Vec<u8> {
+    const TABLE: [u8; 128] = {
+        let mut t = [255u8; 128];
+        let mut i = 0u8;
+        while i < 26 {
+            t[(b'A' + i) as usize] = i;
+            t[(b'a' + i) as usize] = i + 26;
+            i += 1;
+        }
+        let mut d = 0u8;
+        while d < 10 {
+            t[(b'0' + d) as usize] = d + 52;
+            d += 1;
+        }
+        t[b'+' as usize] = 62;
+        t[b'/' as usize] = 63;
+        t
+    };
+    let bytes: Vec<u8> = s.bytes().filter(|&b| b != b'=').collect();
+    let mut out = Vec::with_capacity(bytes.len() * 3 / 4);
+    for chunk in bytes.chunks(4) {
+        let mut buf = [0u32; 4];
+        for (i, &b) in chunk.iter().enumerate() {
+            buf[i] = TABLE[b as usize] as u32;
+        }
+        let triple = (buf[0] << 18) | (buf[1] << 12) | (buf[2] << 6) | buf[3];
+        out.push((triple >> 16) as u8);
+        if chunk.len() > 2 {
+            out.push((triple >> 8) as u8);
+        }
+        if chunk.len() > 3 {
+            out.push(triple as u8);
+        }
+    }
+    out
+}
+
+#[test]
+fn ndjson_bitmap_field_present() {
+    let fixtures = available_fixtures();
+    if fixtures.is_empty() {
+        return;
+    }
+
+    for fixture in fixtures {
+        let lines = run_stream(fixture, None);
+        let mut checked = 0;
+
+        for line in &lines[1..] {
+            let json = parse_json(line);
+            let objects = json.get("objects").unwrap().as_array().unwrap();
+            for obj in objects {
+                let bitmap = obj.get("bitmap");
+                assert!(
+                    bitmap.is_some(),
+                    "{fixture}: object missing bitmap field"
+                );
+
+                let w = obj.get("width");
+                let h = obj.get("height");
+                if let (Some(w), Some(h)) = (w, h) {
+                    let w = w.as_u64().unwrap() as usize;
+                    let h = h.as_u64().unwrap() as usize;
+                    let bm = bitmap.unwrap();
+                    if !bm.is_null() {
+                        let decoded = base64_decode(bm.as_str().unwrap());
+                        assert_eq!(
+                            decoded.len(),
+                            w * h,
+                            "{fixture}: bitmap size mismatch: got {} expected {}",
+                            decoded.len(),
+                            w * h,
+                        );
+                        checked += 1;
+                    }
+                }
+            }
+        }
+
+        // Ensure we actually checked some bitmaps (at least for MKV fixtures).
+        if fixture.ends_with(".mkv") {
+            assert!(
+                checked > 0,
+                "{fixture}: expected at least one decoded bitmap"
             );
         }
     }

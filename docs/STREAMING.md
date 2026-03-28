@@ -137,7 +137,8 @@ Display sets appear in three states:
       "sequence": "complete",
       "data_length": 8635,
       "width": 377,
-      "height": 43
+      "height": 43,
+      "bitmap": "<base64 palette indices, 377*43 = 16211 bytes>"
     },
     {
       "id": 1,
@@ -145,7 +146,8 @@ Display sets appear in three states:
       "sequence": "complete",
       "data_length": 5210,
       "width": 472,
-      "height": 43
+      "height": 43,
+      "bitmap": "<base64 palette indices, 472*43 = 20296 bytes>"
     }
   ]
 }
@@ -255,29 +257,34 @@ B = luminance + 1.772 * (cb - 128)
 
 ### Object definitions
 
-Each entry in `objects` defines a subtitle image (RLE-compressed bitmap on a transparent background).
+Each entry in `objects` defines a subtitle image. The RLE-compressed bitmap data is automatically decoded into a flat buffer of palette indices.
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `id` | `number` | Object ID (referenced by `composition.objects[].object_id`) |
 | `version` | `number` | Object version within the current epoch |
-| `sequence` | `string` | Fragment position: `"complete"`, `"first"`, `"last"`, or `"continuation"` |
+| `sequence` | `string` | `"complete"`, `"reassembled"`, `"first"`, `"last"`, or `"continuation"` |
 | `data_length` | `number` | Total object data length in bytes (includes 4 bytes for width+height) |
-| `width` | `number \| null` | Image width in pixels. Present only on `"complete"` or `"first"` fragments. |
-| `height` | `number \| null` | Image height in pixels. Present only on `"complete"` or `"first"` fragments. |
+| `width` | `number` | Image width in pixels |
+| `height` | `number` | Image height in pixels |
+| `bitmap` | `string \| null` | Base64-encoded palette indices (1 byte per pixel, row-major). `null` if decoding failed. |
+
+#### Bitmap format
+
+The `bitmap` field contains the decoded subtitle image as a base64-encoded buffer of palette entry indices. Each byte is an index (0–255) into the `palettes[].entries[]` array. Pixels are stored in row-major order (left to right, top to bottom). The decoded buffer is exactly `width * height` bytes.
+
+To render the image, look up each pixel's palette entry to get its YCrCb color and alpha value. libpgs does not perform color conversion — consumers choose their own color space handling.
 
 #### Object fragmentation
 
-Large objects may be split across multiple ODS segments. The `sequence` field indicates the fragment's position:
+Large objects in the PGS format may be split across multiple ODS segments. libpgs automatically reassembles fragments within each display set and decodes the combined bitmap. Reassembled objects have `"sequence": "reassembled"` to distinguish them from single-segment `"complete"` objects.
 
 | Value | Meaning |
 |-------|---------|
-| `"complete"` | Complete object in a single segment (most common) |
-| `"first"` | First fragment — contains `width` and `height` |
-| `"continuation"` | Middle fragment — no dimensions |
-| `"last"` | Final fragment — no dimensions |
+| `"complete"` | Single-segment object (most common) |
+| `"reassembled"` | Multiple fragments were combined into one object |
 
-Fragments share the same `id`. To reassemble, concatenate the raw payloads (from `--raw-payloads`) of all fragments with the same `id` in order.
+With `--raw-payloads`, the `payload` field of a reassembled object contains the concatenated raw payloads of all fragments.
 
 ---
 
@@ -349,6 +356,35 @@ libpgs stream movie.mkv | jq 'select(.type == "display_set" and .composition.sta
 
 ```bash
 libpgs stream movie.mkv | jq 'select(.type == "display_set") | .palettes[].entries[] | select(.alpha > 0)'
+```
+
+### Render bitmap to image (Python)
+
+```python
+import json, base64, sys
+from PIL import Image
+
+for line in sys.stdin:
+    msg = json.loads(line)
+    if msg["type"] != "display_set":
+        continue
+    palette = msg["palettes"][0]["entries"] if msg["palettes"] else []
+    for obj in msg["objects"]:
+        if not obj.get("bitmap"):
+            continue
+        w, h = obj["width"], obj["height"]
+        indices = base64.b64decode(obj["bitmap"])
+        img = Image.new("RGBA", (w, h))
+        for i, idx in enumerate(indices):
+            entry = palette[idx] if idx < len(palette) else {"luminance": 0, "cr": 128, "cb": 128, "alpha": 0}
+            y_val, cr, cb, a = entry["luminance"], entry["cr"], entry["cb"], entry["alpha"]
+            r = max(0, min(255, int(y_val + 1.402 * (cr - 128))))
+            g = max(0, min(255, int(y_val - 0.344136 * (cb - 128) - 0.714136 * (cr - 128))))
+            b = max(0, min(255, int(y_val + 1.772 * (cb - 128))))
+            img.putpixel((i % w, i // w), (r, g, b, a))
+        img.save(f"subtitle_{obj['id']}.png")
+        break  # first object only
+    break  # first display set only
 ```
 
 ---

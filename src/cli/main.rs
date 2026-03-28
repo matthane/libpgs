@@ -486,38 +486,100 @@ fn write_objects(
     segments: &[libpgs::pgs::PgsSegment],
     raw_payloads: bool,
 ) -> std::io::Result<()> {
+    use libpgs::pgs::payload::ods_rle_data;
+    use libpgs::pgs::rle::decode_rle;
     use libpgs::pgs::segment::SegmentType;
 
-    write!(out, "\"objects\":[")?;
-    let mut first = true;
-    for seg in segments
+    // Collect ODS segments with parsed data.
+    let ods_segments: Vec<_> = segments
         .iter()
         .filter(|s| s.segment_type == SegmentType::ObjectDefinition)
-    {
-        if let Some(ods) = seg.parse_ods() {
-            if !first {
-                write!(out, ",")?;
-            }
-            first = false;
-            write!(
-                out,
-                "{{\"id\":{},\"version\":{},\"sequence\":\"{}\",\"data_length\":{}",
-                ods.id,
-                ods.version,
-                ods.sequence.as_str(),
-                ods.data_length,
-            )?;
-            if let Some(w) = ods.width {
-                write!(out, ",\"width\":{}", w)?;
-            }
-            if let Some(h) = ods.height {
-                write!(out, ",\"height\":{}", h)?;
-            }
-            if raw_payloads {
-                write!(out, ",\"payload\":\"{}\"", base64_encode(&seg.payload))?;
-            }
-            write!(out, "}}")?;
+        .filter_map(|seg| seg.parse_ods().map(|ods| (seg, ods)))
+        .collect();
+
+    // Group by object ID, preserving first-appearance order.
+    let mut groups: Vec<(u16, Vec<(&libpgs::pgs::PgsSegment, libpgs::pgs::OdsData)>)> = Vec::new();
+    for (seg, ods) in ods_segments {
+        if let Some(group) = groups.iter_mut().find(|(id, _)| *id == ods.id) {
+            group.1.push((seg, ods));
+        } else {
+            groups.push((ods.id, vec![(seg, ods)]));
         }
+    }
+
+    write!(out, "\"objects\":[")?;
+    for (gi, (_obj_id, fragments)) in groups.iter().enumerate() {
+        if gi > 0 {
+            write!(out, ",")?;
+        }
+
+        // Get metadata from the first/complete fragment.
+        let first_ods = &fragments[0].1;
+        let is_reassembled = fragments.len() > 1;
+        let sequence_str = if is_reassembled {
+            "reassembled"
+        } else {
+            first_ods.sequence.as_str()
+        };
+
+        write!(
+            out,
+            "{{\"id\":{},\"version\":{},\"sequence\":\"{}\",\"data_length\":{}",
+            first_ods.id, first_ods.version, sequence_str, first_ods.data_length,
+        )?;
+
+        // Width/height from Complete or First fragment.
+        let width = first_ods.width;
+        let height = first_ods.height;
+        if let Some(w) = width {
+            write!(out, ",\"width\":{}", w)?;
+        }
+        if let Some(h) = height {
+            write!(out, ",\"height\":{}", h)?;
+        }
+
+        // Decode bitmap: concatenate RLE data from all fragments, then decode.
+        if let (Some(w), Some(h)) = (width, height) {
+            let mut rle_data = Vec::new();
+            let mut rle_ok = true;
+            for (seg, ods) in fragments {
+                if let Some(data) = ods_rle_data(&seg.payload, ods.sequence) {
+                    rle_data.extend_from_slice(data);
+                } else {
+                    rle_ok = false;
+                    break;
+                }
+            }
+            if rle_ok {
+                if let Some(pixels) = decode_rle(&rle_data, w, h) {
+                    write!(out, ",\"bitmap\":\"{}\"", base64_encode(&pixels))?;
+                } else {
+                    write!(out, ",\"bitmap\":null")?;
+                }
+            } else {
+                write!(out, ",\"bitmap\":null")?;
+            }
+        } else {
+            write!(out, ",\"bitmap\":null")?;
+        }
+
+        if raw_payloads {
+            // For reassembled objects, concatenate all raw payloads.
+            if fragments.len() == 1 {
+                write!(
+                    out,
+                    ",\"payload\":\"{}\"",
+                    base64_encode(&fragments[0].0.payload)
+                )?;
+            } else {
+                let mut combined = Vec::new();
+                for (seg, _) in fragments {
+                    combined.extend_from_slice(&seg.payload);
+                }
+                write!(out, ",\"payload\":\"{}\"", base64_encode(&combined))?;
+            }
+        }
+        write!(out, "}}")?;
     }
     write!(out, "]")?;
 

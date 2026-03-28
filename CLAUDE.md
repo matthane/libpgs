@@ -29,6 +29,8 @@ src/
 │   └── reader.rs       # SeekBufReader — buffered I/O with position tracking
 ├── pgs/
 │   ├── segment.rs      # PgsSegment: parse/serialize PGS segments
+│   ├── payload.rs      # PGS segment payload parsing (PCS, WDS, PDS, ODS)
+│   ├── rle.rs          # PGS RLE bitmap decoder (palette indices)
 │   └── display_set.rs  # DisplaySet + DisplaySetAssembler (push-based state machine)
 ├── ebml/
 │   ├── mod.rs          # EBML element ID constants
@@ -130,10 +132,10 @@ Track fields: `track_id`, `language` (nullable), `container`, `name` (nullable, 
 Display sets use semantic grouping instead of a flat segment array. PCS data is in `composition`, WDS in `windows[]`, PDS in `palettes[]`, ODS in `objects[]`. END segments are omitted (no data).
 
 ```json
-{"type":"display_set","track_id":3,"index":0,"pts":311580,"pts_ms":3462.0000,"composition":{"number":1,"state":"epoch_start","video_width":1920,"video_height":1080,"palette_only":false,"palette_id":0,"objects":[{"object_id":0,"window_id":0,"x":773,"y":108,"crop":null}]},"windows":[{"id":0,"x":773,"y":108,"width":377,"height":43}],"palettes":[{"id":0,"version":0,"entries":[{"id":0,"luminance":16,"cr":128,"cb":128,"alpha":0}]}],"objects":[{"id":0,"version":0,"sequence":"complete","data_length":8635,"width":377,"height":43}]}
+{"type":"display_set","track_id":3,"index":0,"pts":311580,"pts_ms":3462.0000,"composition":{"number":1,"state":"epoch_start","video_width":1920,"video_height":1080,"palette_only":false,"palette_id":0,"objects":[{"object_id":0,"window_id":0,"x":773,"y":108,"crop":null}]},"windows":[{"id":0,"x":773,"y":108,"width":377,"height":43}],"palettes":[{"id":0,"version":0,"entries":[{"id":0,"luminance":16,"cr":128,"cb":128,"alpha":0}]}],"objects":[{"id":0,"version":0,"sequence":"complete","data_length":8635,"width":377,"height":43,"bitmap":"<base64>"}]}
 ```
 
-Key fields: `composition.state` (`normal`/`acquisition_point`/`epoch_start`), `composition.objects[]` (placement instructions cross-referencing `objects[].id` and `windows[].id`), `palettes[].entries[]` (YCrCb+alpha colors), `objects[].sequence` (`complete`/`first`/`last`/`continuation`).
+Key fields: `composition.state` (`normal`/`acquisition_point`/`epoch_start`), `composition.objects[]` (placement instructions cross-referencing `objects[].id` and `windows[].id`), `palettes[].entries[]` (YCrCb+alpha colors), `objects[].sequence` (`complete`/`first`/`last`/`reassembled`), `objects[].bitmap` (base64 palette indices, 1 byte per pixel, row-major). Fragmented objects are automatically reassembled.
 
 **`--raw-payloads` flag:** When passed, each semantic item includes a `"payload"` field with base64-encoded raw segment bytes. Omitted by default.
 
