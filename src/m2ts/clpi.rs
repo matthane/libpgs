@@ -277,7 +277,8 @@ fn parse_program_info_sequences(
                 let lang = std::str::from_utf8(lang_bytes)
                     .ok()
                     .map(|s| s.trim_end_matches('\0').to_string())
-                    .filter(|s| !s.is_empty() && s != "und");
+                    .filter(|s| !s.is_empty() && s != "und")
+                    .map(|s| crate::lang::normalize_language(&s));
 
                 if let Some(lang) = lang {
                     map.entry(stream_pid).or_insert(lang);
@@ -411,7 +412,7 @@ mod tests {
         let data = build_clpi_with_pgs(0x1200, b"eng");
         let map = parse_clpi_file(&data).unwrap();
         assert_eq!(map.len(), 1);
-        assert_eq!(map.get(&0x1200).unwrap(), "eng");
+        assert_eq!(map.get(&0x1200).unwrap(), "en");
     }
 
     #[test]
@@ -458,7 +459,7 @@ mod tests {
 
         let map = parse_clpi_file(&data).unwrap();
         assert_eq!(map.len(), 1, "should only contain PGS stream");
-        assert_eq!(map.get(&0x1200).unwrap(), "fra");
+        assert_eq!(map.get(&0x1200).unwrap(), "fr");
         assert!(!map.contains_key(&0x1011), "should not contain video");
         assert!(!map.contains_key(&0x1100), "should not contain audio");
     }

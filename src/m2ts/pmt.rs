@@ -111,7 +111,7 @@ fn parse_language_from_descriptors(data: &[u8]) -> Option<String> {
             let lang = String::from_utf8_lossy(&data[i..i + 3]).to_string();
             let lang = lang.trim_end_matches('\0').to_string();
             if !lang.is_empty() && lang != "und" {
-                return Some(lang);
+                return Some(crate::lang::normalize_language(&lang));
             }
         }
 
@@ -154,7 +154,7 @@ mod tests {
         assert_eq!(streams.len(), 1);
         assert_eq!(streams[0].stream_type, 0x90);
         assert_eq!(streams[0].elementary_pid, 0x1200);
-        assert_eq!(streams[0].language.as_deref(), Some("eng"));
+        assert_eq!(streams[0].language.as_deref(), Some("en"));
     }
 
     #[test]

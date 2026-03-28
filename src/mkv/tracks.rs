@@ -141,6 +141,9 @@ fn parse_track_entry<R: Read + Seek>(
             language = None;
         }
 
+        // Normalize language codes to BCP 47 (ISO 639-1 where available).
+        language = language.map(|l| crate::lang::normalize_language(&l));
+
         Ok(Some(MkvPgsTrack {
             track_number,
             track_uid,
