@@ -1,6 +1,7 @@
 pub mod ebml;
 pub mod error;
 pub mod io;
+pub(crate) mod lang;
 pub mod m2ts;
 pub mod mkv;
 pub mod pgs;
