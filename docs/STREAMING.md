@@ -13,7 +13,11 @@ libpgs stream <file>                      # All tracks
 libpgs stream <file> -t 3                 # Single track
 libpgs stream <file> -t 3 -t 5            # Multiple tracks
 libpgs stream <file> --raw-payloads       # Include base64 raw segment bytes
+libpgs stream <file> --start 0:05:00      # From 5 minutes to end of file
+libpgs stream <file> --start 0:05:00 --end 0:10:00  # 5-minute window only
 ```
+
+Timestamps accept `HH:MM:SS.ms`, `MM:SS.ms`, `SS.ms`, or plain seconds (e.g., `300`). When `--start` or `--end` is specified, libpgs seeks directly to the estimated byte offset — data before the start point is not read. If no display sets fall within the range, the stream outputs the tracks header followed by EOF (no error).
 
 Output is flushed after every line. Closing the pipe (e.g., `head -n 10`) causes a clean exit.
 
@@ -350,6 +354,16 @@ libpgs stream movie.mkv | jq -s '[.[] | select(.type == "display_set")] | group_
 
 ```bash
 libpgs stream movie.mkv | jq 'select(.type == "display_set" and .composition.state == "epoch_start")'
+```
+
+### Stream a specific time range
+
+```bash
+# Get subtitles between 1:30:00 and 1:35:00
+libpgs stream movie.mkv --start 1:30:00 --end 1:35:00
+
+# Pipe a 5-minute window to a Python consumer
+libpgs stream movie.mkv -t 3 --start 0:05:00 --end 0:10:00 | python process.py
 ```
 
 ### Extract palette colors as RGB

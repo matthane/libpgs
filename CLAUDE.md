@@ -74,6 +74,11 @@ src/
 
 **M2TS BDMV language fallback:** When an M2TS file is inside a `BDMV/STREAM/` directory, the library reads the corresponding `.clpi` file from `BDMV/CLIPINF/` to get PID → language mappings. These are applied as a fallback only — PMT-provided language descriptors always take priority. Fail-silent if the CLPI is missing or unparseable.
 
+**Time-range seeking:** When a time range is specified via `with_time_range()`, each format seeks directly to the estimated byte offset — no data before the start point is read or processed. The iterator also enforces a safety-net filter: display sets with `pts_ms < start_ms` are skipped, and iteration stops when `pts_ms > end_ms`.
+- **MKV with Cues** — exact seeking by filtering cue points to the requested time range before iteration begins.
+- **M2TS** — binary search refinement: starts with a bitrate estimate, then probes the actual PTS at the estimated position and narrows the range iteratively (up to 20 probes of 512 KB each) to converge on the exact byte offset. BDMV uses CLPI `presentation_start_time`/`presentation_end_time` for the initial estimate; non-BDMV discovers last PTS by scanning the final 2 MB.
+- **MKV sequential / SUP** — bitrate estimation: `byte_offset = file_size * (target_pts / duration)`, backed up by a small margin, then scan forward for packet/segment alignment. SUP reads first/last PTS from segment headers.
+
 ### Key types
 
 - `Extractor` — streaming iterator, the central API
@@ -90,6 +95,7 @@ src/
 **Streaming:**
 - `Extractor::open(path)` → create extractor
 - `Extractor::with_track_filter(&[u32])` → restrict tracks (chainable, reopens file)
+- `Extractor::with_time_range(Option<f64>, Option<f64>)` → restrict to time window in ms (chainable, seeks to estimated offset)
 - `Extractor::tracks()` → discovered PGS tracks
 - `Extractor::history()` / `history_for_track(id)` → catalog of yielded display sets
 - `Extractor::drain_history()` / `clear_history()` → memory management
@@ -115,6 +121,8 @@ libpgs extract <file> -o <out> [-t <id>]   # Extract to .sup
 libpgs stream <file> [-t <id>] [--raw-payloads]  # Stream NDJSON to stdout
 libpgs bench <file>                        # Benchmark I/O efficiency
 ```
+
+`extract` and `stream` accept `--start` and `--end` timestamps (`HH:MM:SS.ms`, `MM:SS.ms`, `SS.ms`, or plain seconds) to limit extraction to a time window. Seeks directly to the estimated offset — does not scan data before the start point.
 
 ### Stream command (NDJSON protocol)
 

@@ -34,6 +34,14 @@ for result in extractor {
     println!("Track {}: {} segments", track_ds.track_id, track_ds.display_set.segments.len());
 }
 
+// Extract only a specific time range (seeks directly, minimal I/O)
+let extractor = Extractor::open("movie.mkv")?
+    .with_time_range(Some(300_000.0), Some(600_000.0)); // 5:00 to 10:00
+for result in extractor {
+    let track_ds = result?;
+    println!("Track {} @ {}ms", track_ds.track_id, track_ds.display_set.pts_ms);
+}
+
 // Or collect everything at once
 let by_track = Extractor::open("movie.mkv")?.collect_by_track()?;
 for track in &by_track {
@@ -49,6 +57,19 @@ libpgs extract <file> -o <out> [-t <id>]   # Extract to .sup
 libpgs stream <file> [-t <id>] [--raw-payloads]  # Stream NDJSON to stdout
 libpgs bench <file>                        # Benchmark I/O efficiency
 ```
+
+### Time-range filtering
+
+Both `extract` and `stream` accept `--start` and `--end` timestamps to limit extraction to a specific time window:
+
+```bash
+libpgs extract movie.mkv -o out.sup --start 0:05:00          # From 5 minutes to end
+libpgs stream movie.mkv --start 0:05:00 --end 0:10:00        # 5-minute window only
+```
+
+Timestamps accept `HH:MM:SS.ms`, `MM:SS.ms`, `SS.ms`, or plain seconds. When a time range is specified, libpgs seeks directly to the estimated byte offset — it does not read and discard data before the start point. For MKV files with a Cues index, seeking is exact. For M2TS and SUP files, seeking uses bitrate estimation with a small safety margin.
+
+If no display sets fall within the requested range, libpgs reports zero results with no error.
 
 ### Streaming to external scripts
 
@@ -77,7 +98,7 @@ import subprocess
 import json
 
 proc = subprocess.Popen(
-    ["libpgs", "stream", "movie.mkv"],
+    ["libpgs", "stream", "movie.mkv", "--start", "0:05:00", "--end", "0:10:00"],
     stdout=subprocess.PIPE,
     text=True,
 )
