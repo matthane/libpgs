@@ -32,6 +32,8 @@ pub(crate) struct MkvMetadata {
     pub cue_points: Option<Vec<cues::PgsCuePoint>>,
     /// TrackUID → NUMBER_OF_FRAMES from Tags element.
     pub frame_counts: HashMap<u64, u64>,
+    /// Segment duration in timestamp-scale units, if present in Info element.
+    pub duration: Option<f64>,
 }
 
 /// Parse all MKV metadata needed for PGS extraction in a single pass.
@@ -62,11 +64,15 @@ pub(crate) fn prepare_mkv_metadata<R: Read + Seek>(
         }
     }
 
-    let timestamp_scale = if let Some(info_pos) = layout.info_position {
+    let info = if let Some(info_pos) = layout.info_position {
         header::parse_info(reader, info_pos)?
     } else {
-        1_000_000
+        header::SegmentInfo {
+            timestamp_scale: 1_000_000,
+            duration: None,
+        }
     };
+    let timestamp_scale = info.timestamp_scale;
 
     let cue_points = if let Some(cues_pos) = layout.cues_position {
         let points = cues::parse_cues_for_tracks(
@@ -103,6 +109,7 @@ pub(crate) fn prepare_mkv_metadata<R: Read + Seek>(
         timestamp_scale,
         cue_points,
         frame_counts,
+        duration: info.duration,
     })
 }
 

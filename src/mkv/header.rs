@@ -251,10 +251,18 @@ fn parse_seek_entry<R: Read + Seek>(
 
 /// Parse the Info element to get TimestampScale.
 /// Returns the timestamp scale in nanoseconds (default 1,000,000 = 1ms).
+/// Parsed fields from the Segment/Info element.
+pub struct SegmentInfo {
+    /// Timestamp scale in nanoseconds per MKV clock tick (default: 1,000,000 = 1ms).
+    pub timestamp_scale: u64,
+    /// Duration of the segment in timestamp-scale units, if present.
+    pub duration: Option<f64>,
+}
+
 pub fn parse_info<R: Read + Seek>(
     reader: &mut SeekBufReader<R>,
     info_position: u64,
-) -> Result<u64, PgsError> {
+) -> Result<SegmentInfo, PgsError> {
     reader.seek_to(info_position)?;
 
     let id = read_element_id(reader)?;
@@ -265,17 +273,41 @@ pub fn parse_info<R: Read + Seek>(
     let end = reader.position() + size.value;
 
     let mut timestamp_scale: u64 = 1_000_000; // Default: 1ms
+    let mut duration: Option<f64> = None;
 
     while reader.position() < end {
         let child_id = read_element_id(reader)?;
         let child_size = read_element_size(reader)?;
 
-        if child_id.value == ids::TIMESTAMP_SCALE {
-            timestamp_scale = reader.read_uint_be(child_size.value as usize)?;
-        } else {
-            reader.skip(child_size.value)?;
+        match child_id.value {
+            ids::TIMESTAMP_SCALE => {
+                timestamp_scale = reader.read_uint_be(child_size.value as usize)?;
+            }
+            ids::DURATION => {
+                // Duration is an EBML float (4 or 8 bytes).
+                if child_size.value == 4 {
+                    let bytes = reader.read_bytes(4)?;
+                    let val = f32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+                    duration = Some(val as f64);
+                } else if child_size.value == 8 {
+                    let bytes = reader.read_bytes(8)?;
+                    let val = f64::from_be_bytes([
+                        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6],
+                        bytes[7],
+                    ]);
+                    duration = Some(val);
+                } else {
+                    reader.skip(child_size.value)?;
+                }
+            }
+            _ => {
+                reader.skip(child_size.value)?;
+            }
         }
     }
 
-    Ok(timestamp_scale)
+    Ok(SegmentInfo {
+        timestamp_scale,
+        duration,
+    })
 }

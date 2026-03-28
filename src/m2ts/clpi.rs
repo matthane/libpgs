@@ -38,17 +38,16 @@ pub(crate) fn clpi_language_map(m2ts_path: &Path) -> HashMap<u16, String> {
 }
 
 /// Attempt to find and parse a CLPI file corresponding to an M2TS file
-/// to extract the presentation start time from the SequenceInfo section.
+/// to extract presentation start and end times from the SequenceInfo section.
 ///
-/// Returns the presentation_start_time in 90 kHz ticks (same units as PTS),
-/// or `None` if the CLPI file is unavailable or the field cannot be parsed.
-pub(crate) fn clpi_presentation_start_time(m2ts_path: &Path) -> Option<u64> {
+/// Returns `(start, end)` in 90 kHz ticks, or `None` if unavailable.
+pub(crate) fn clpi_presentation_times(m2ts_path: &Path) -> Option<(u64, u64)> {
     let clpi_path = resolve_clpi_path(m2ts_path)?;
     let data = std::fs::read(&clpi_path).ok()?;
-    parse_sequence_info_start_time(&data)
+    parse_sequence_info_times(&data)
 }
 
-/// Parse the SequenceInfo section of a CLPI file to extract presentation_start_time.
+/// Parse the SequenceInfo section of a CLPI file to extract presentation times.
 ///
 /// Layout (from the BD spec):
 ///   CLPI header bytes 8..12: SequenceInfo section offset (u32 BE)
@@ -65,7 +64,7 @@ pub(crate) fn clpi_presentation_start_time(m2ts_path: &Path) -> Option<u64> {
 ///         [+2..6]  u32 spn_stc_start
 ///         [+6..10] u32 presentation_start_time (90 kHz ticks)
 ///         [+10..14] u32 presentation_end_time
-fn parse_sequence_info_start_time(data: &[u8]) -> Option<u64> {
+fn parse_sequence_info_times(data: &[u8]) -> Option<(u64, u64)> {
     if data.len() < MIN_CLPI_SIZE {
         return None;
     }
@@ -103,14 +102,16 @@ fn parse_sequence_info_start_time(data: &[u8]) -> Option<u64> {
 
     // First STC sequence starts at atc_pos + 6.
     let stc_pos = atc_pos + 6;
-    // pcr_pid(2) + spn_stc_start(4) + presentation_start_time(4) = 10 bytes minimum
-    if stc_pos + 10 > section.len() {
+    // pcr_pid(2) + spn_stc_start(4) + presentation_start_time(4) + presentation_end_time(4) = 14
+    if stc_pos + 14 > section.len() {
         return None;
     }
 
-    let presentation_start_time = read_u32_be(section, stc_pos + 6)? as u64;
-    Some(presentation_start_time)
+    let start = read_u32_be(section, stc_pos + 6)? as u64;
+    let end = read_u32_be(section, stc_pos + 10)? as u64;
+    Some((start, end))
 }
+
 
 /// Resolve the CLPI path from an M2TS path.
 ///
@@ -483,8 +484,11 @@ mod tests {
     }
 
     /// Build a minimal CLPI binary with a SequenceInfo section containing
-    /// the given presentation_start_time.
-    fn build_clpi_with_sequence_info(presentation_start_time: u32) -> Vec<u8> {
+    /// the given presentation times.
+    fn build_clpi_with_sequence_times(
+        presentation_start_time: u32,
+        presentation_end_time: u32,
+    ) -> Vec<u8> {
         let mut data = Vec::new();
 
         // Header: magic + version (8 bytes)
@@ -523,24 +527,37 @@ mod tests {
         data.extend_from_slice(&0x1001u16.to_be_bytes()); // pcr_pid
         data.extend_from_slice(&0u32.to_be_bytes()); // spn_stc_start
         data.extend_from_slice(&presentation_start_time.to_be_bytes()); // presentation_start_time
-        data.extend_from_slice(&0u32.to_be_bytes()); // presentation_end_time
+        data.extend_from_slice(&presentation_end_time.to_be_bytes()); // presentation_end_time
 
         data
+    }
+
+    fn build_clpi_with_sequence_info(presentation_start_time: u32) -> Vec<u8> {
+        build_clpi_with_sequence_times(presentation_start_time, 0)
     }
 
     #[test]
     fn test_parse_sequence_info_start_time() {
         // 54000000 ticks at 90kHz = 600 seconds = 10 minutes (typical BD offset)
         let data = build_clpi_with_sequence_info(54_000_000);
-        let result = parse_sequence_info_start_time(&data);
-        assert_eq!(result, Some(54_000_000));
+        let result = parse_sequence_info_times(&data);
+        assert_eq!(result, Some((54_000_000, 0)));
     }
 
     #[test]
     fn test_parse_sequence_info_zero_offset() {
         let data = build_clpi_with_sequence_info(0);
-        let result = parse_sequence_info_start_time(&data);
-        assert_eq!(result, Some(0));
+        let result = parse_sequence_info_times(&data);
+        assert_eq!(result, Some((0, 0)));
+    }
+
+    #[test]
+    fn test_parse_sequence_info_times() {
+        let start = 54_000_000u32; // 10 minutes
+        let end = 594_000_000u32; // 110 minutes
+        let data = build_clpi_with_sequence_times(start, end);
+        let result = parse_sequence_info_times(&data);
+        assert_eq!(result, Some((start as u64, end as u64)));
     }
 
     #[test]
@@ -552,14 +569,14 @@ mod tests {
         while data.len() < MIN_CLPI_SIZE {
             data.push(0);
         }
-        assert_eq!(parse_sequence_info_start_time(&data), None);
+        assert_eq!(parse_sequence_info_times(&data), None);
     }
 
     #[test]
     fn test_parse_sequence_info_bad_magic() {
         let mut data = build_clpi_with_sequence_info(90000);
         data[0..4].copy_from_slice(b"XXXX");
-        assert_eq!(parse_sequence_info_start_time(&data), None);
+        assert_eq!(parse_sequence_info_times(&data), None);
     }
 
     #[test]
@@ -567,6 +584,6 @@ mod tests {
         let mut data = build_clpi_with_sequence_info(90000);
         // Set num_atc_sequences to 0 at offset 40 + 5.
         data[45] = 0;
-        assert_eq!(parse_sequence_info_start_time(&data), None);
+        assert_eq!(parse_sequence_info_times(&data), None);
     }
 }
