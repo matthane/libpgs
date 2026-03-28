@@ -286,24 +286,29 @@ pub struct OdsData {
 impl OdsData {
     /// Parse an ODS payload. Returns `None` if truncated or malformed.
     pub fn parse(payload: &[u8]) -> Option<Self> {
-        if payload.len() < 7 {
+        if payload.len() < 4 {
             return None;
         }
 
         let id = u16_be(payload, 0);
         let version = payload[2];
         let sequence = SequenceFlag::from_byte(payload[3])?;
-        let data_length = u24_be(payload, 4);
 
         let is_first = matches!(sequence, SequenceFlag::Complete | SequenceFlag::First);
 
-        let (width, height) = if is_first {
+        // Only First/Complete fragments have data_length + width + height after
+        // the 4-byte header. Continuation/Last fragments go straight to RLE data.
+        let (data_length, width, height) = if is_first {
             if payload.len() < 11 {
                 return None;
             }
-            (Some(u16_be(payload, 7)), Some(u16_be(payload, 9)))
+            (
+                u24_be(payload, 4),
+                Some(u16_be(payload, 7)),
+                Some(u16_be(payload, 9)),
+            )
         } else {
-            (None, None)
+            (0, None, None)
         };
 
         Some(OdsData {
@@ -323,14 +328,14 @@ impl OdsData {
 
 /// Extract the RLE data bytes from an ODS segment payload.
 ///
-/// For Complete/First segments, RLE starts at byte 11 (after 7-byte header + 4-byte dimensions).
-/// For Continuation/Last segments, RLE starts at byte 7 (after 7-byte header, no dimensions).
+/// For Complete/First segments, RLE starts at byte 11 (after 4-byte header + 3-byte data_length + 4-byte dimensions).
+/// For Continuation/Last segments, RLE starts at byte 4 (after 4-byte header only — no data_length or dimensions).
 ///
 /// Returns `None` if the payload is too short.
 pub fn ods_rle_data(payload: &[u8], sequence: SequenceFlag) -> Option<&[u8]> {
     let offset = match sequence {
         SequenceFlag::Complete | SequenceFlag::First => 11,
-        SequenceFlag::Continuation | SequenceFlag::Last => 7,
+        SequenceFlag::Continuation | SequenceFlag::Last => 4,
     };
     if payload.len() < offset {
         return None;
@@ -565,32 +570,34 @@ mod tests {
 
     #[test]
     fn test_ods_continuation_fragment() {
+        // Continuation fragments have only the 4-byte header (no data_length/width/height).
         let payload = vec![
             0x00, 0x00, // object id: 0
             0x01, // version: 1
             0x00, // sequence: continuation
-            0x00, 0x10, 0x00, // data_length: 4096
-            // No width/height for continuation fragments
-            0xAA, 0xBB, // RLE data
+            // RLE data follows immediately:
+            0xAA, 0xBB,
         ];
         let ods = OdsData::parse(&payload).unwrap();
         assert_eq!(ods.sequence, SequenceFlag::Continuation);
-        assert_eq!(ods.data_length, 4096);
+        assert_eq!(ods.data_length, 0);
         assert!(ods.width.is_none());
         assert!(ods.height.is_none());
     }
 
     #[test]
     fn test_ods_last_fragment() {
+        // Last fragments have only the 4-byte header (no data_length/width/height).
         let payload = vec![
             0x00, 0x01, // object id: 1
             0x00, // version: 0
             0x40, // sequence: last
-            0x00, 0x08, 0x00, // data_length
-            0xCC, 0xDD, // RLE data
+            // RLE data follows immediately:
+            0xCC, 0xDD,
         ];
         let ods = OdsData::parse(&payload).unwrap();
         assert_eq!(ods.sequence, SequenceFlag::Last);
+        assert_eq!(ods.data_length, 0);
         assert!(ods.width.is_none());
     }
 
@@ -612,8 +619,9 @@ mod tests {
 
     #[test]
     fn test_ods_truncated() {
+        // Less than 4-byte header.
         assert!(OdsData::parse(&[0x00, 0x00, 0x00]).is_none());
-        // First fragment but missing width/height
+        // First/complete fragment but missing width/height (only 7 bytes, need 11).
         let payload = vec![0x00, 0x00, 0x00, 0xC0, 0x00, 0x10, 0x00];
         assert!(OdsData::parse(&payload).is_none());
     }
