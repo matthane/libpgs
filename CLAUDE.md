@@ -77,7 +77,8 @@ src/
 **Time-range seeking:** When a time range is specified via `with_time_range()`, each format seeks directly to the estimated byte offset — no data before the start point is read or processed. The iterator also enforces a safety-net filter: display sets with `pts_ms < start_ms` are skipped, and iteration stops when `pts_ms > end_ms`.
 - **MKV with Cues** — exact seeking by filtering cue points to the requested time range before iteration begins.
 - **M2TS** — binary search refinement: starts with a bitrate estimate, then probes the actual PTS at the estimated position and narrows the range iteratively (up to 20 probes of 512 KB each) to converge on the exact byte offset. BDMV uses CLPI `presentation_start_time`/`presentation_end_time` for the initial estimate; non-BDMV discovers last PTS by scanning the final 2 MB.
-- **MKV sequential / SUP** — bitrate estimation: `byte_offset = file_size * (target_pts / duration)`, backed up by a small margin, then scan forward for packet/segment alignment. SUP reads first/last PTS from segment headers.
+- **MKV sequential** — binary search refinement: starts with a bitrate estimate from the Duration element, then probes Cluster timestamps at estimated positions (up to 20 iterations, scanning up to 512 KB per probe for the next Cluster header) to converge on the correct offset.
+- **SUP** — bitrate estimation: `byte_offset = file_size * (target_pts / duration)`, backed up by a small margin, then scan forward for PG magic alignment. Reads first/last PTS from segment headers.
 
 ### Key types
 

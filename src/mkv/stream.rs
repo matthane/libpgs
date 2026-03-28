@@ -15,6 +15,12 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::File;
 use std::path::PathBuf;
 
+/// Seek margin for binary search convergence.
+const SEEK_MARGIN: u64 = 2 * 1024 * 1024;
+
+/// Probe scan limit: how far to scan forward looking for a Cluster element (512 KB).
+const PROBE_SCAN_LIMIT: u64 = 512 * 1024;
+
 /// Streaming MKV extractor state machine.
 ///
 /// Yields `TrackDisplaySet` one at a time by advancing through the MKV file
@@ -213,7 +219,7 @@ impl MkvExtractorState {
         let file = File::open(&self.path)?;
         self.reader = SeekBufReader::with_capacity(SEQ_BUF_SIZE, file);
 
-        // Estimate start position if duration info is available.
+        // Estimate start position via binary search refinement.
         let segment_start = first_cluster;
         let segment_end = self.metadata.layout.segment_data_end;
         let scan_start = if let Some(start_mkv) = start_mkv {
@@ -222,10 +228,32 @@ impl MkvExtractorState {
                 if duration_mkv > 0 {
                     let segment_size = segment_end - segment_start;
                     let ratio = start_mkv as f64 / duration_mkv as f64;
-                    let estimated = segment_start + (segment_size as f64 * ratio) as u64;
-                    // Back up by 2MB margin to avoid missing boundary subtitles.
-                    let margin = (2 * 1024 * 1024u64).min(segment_size / 100);
-                    estimated.saturating_sub(margin).max(segment_start)
+                    let estimated =
+                        segment_start + (segment_size as f64 * ratio) as u64;
+
+                    // Binary search: probe Cluster timestamps to converge.
+                    let mut lo = segment_start;
+                    let mut hi = estimated.min(segment_end);
+                    let mut best = segment_start;
+                    for _ in 0..20 {
+                        if hi.saturating_sub(lo) < SEEK_MARGIN {
+                            break;
+                        }
+                        let mid = lo + (hi - lo) / 2;
+                        match self.probe_cluster_timestamp(mid, segment_end) {
+                            Some(ts) if ts > start_mkv => {
+                                hi = mid;
+                            }
+                            Some(_) => {
+                                best = mid;
+                                lo = mid;
+                            }
+                            None => {
+                                hi = mid;
+                            }
+                        }
+                    }
+                    best.saturating_sub(SEEK_MARGIN).max(segment_start)
                 } else {
                     segment_start
                 }
@@ -445,6 +473,47 @@ impl MkvExtractorState {
                 })
                 .collect()
         }))
+    }
+
+    /// Probe the Cluster timestamp at or after the given byte position.
+    ///
+    /// Seeks to `position`, scans forward for a Cluster element, reads its
+    /// Timestamp child, and returns the timestamp in MKV units. Used for
+    /// binary search refinement during sequential scan seeking.
+    fn probe_cluster_timestamp(&mut self, position: u64, segment_end: u64) -> Option<u64> {
+        self.reader.seek_to(position).ok()?;
+        let scan_end = (position + PROBE_SCAN_LIMIT).min(segment_end);
+
+        while self.reader.position() < scan_end {
+            let id = read_element_id(&mut self.reader).ok()?;
+            let size = read_element_size(&mut self.reader).ok()?;
+
+            if id.value == ids::CLUSTER {
+                // Read children looking for Timestamp.
+                let cluster_end = self.reader.position() + size.value;
+                while self.reader.position() < cluster_end {
+                    let child_id = read_element_id(&mut self.reader).ok()?;
+                    let child_size = read_element_size(&mut self.reader).ok()?;
+                    if child_id.value == ids::TIMESTAMP {
+                        return self
+                            .reader
+                            .read_uint_be(child_size.value as usize)
+                            .ok();
+                    }
+                    // Skip non-Timestamp children.
+                    self.reader
+                        .seek_to(self.reader.position() + child_size.value)
+                        .ok()?;
+                }
+                return None; // Cluster found but no Timestamp child.
+            }
+
+            // Skip non-Cluster elements.
+            self.reader
+                .seek_to(self.reader.position() + size.value)
+                .ok()?;
+        }
+        None
     }
 
     /// Get current bytes read from the underlying reader.
