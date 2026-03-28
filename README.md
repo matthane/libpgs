@@ -52,10 +52,10 @@ for track in &by_track {
 ## CLI
 
 ```
-libpgs tracks <file>                       # List PGS tracks
-libpgs extract <file> -o <out> [-t <id>]   # Extract to .sup
-libpgs stream <file> [-t <id>] [--raw-payloads]  # Stream NDJSON to stdout
-libpgs bench <file>                        # Benchmark I/O efficiency
+libpgs tracks <file>                                                        # List PGS tracks
+libpgs extract <file> -o <out> [-t <id>] [--start T] [--end T]              # Extract to .sup
+libpgs stream <file> [-t <id>] [--raw-payloads] [--start T] [--end T]       # Stream NDJSON to stdout
+libpgs bench <file>                                                         # Benchmark I/O efficiency
 ```
 
 ### Time-range filtering
@@ -67,7 +67,7 @@ libpgs extract movie.mkv -o out.sup --start 0:05:00          # From 5 minutes to
 libpgs stream movie.mkv --start 0:05:00 --end 0:10:00        # 5-minute window only
 ```
 
-Timestamps accept `HH:MM:SS.ms`, `MM:SS.ms`, `SS.ms`, or plain seconds. When a time range is specified, libpgs seeks directly to the estimated byte offset — it does not read and discard data before the start point. For MKV files with a Cues index, seeking is exact. For M2TS and SUP files, seeking uses bitrate estimation with a small safety margin.
+Timestamps accept `HH:MM:SS.ms`, `MM:SS.ms`, `SS.ms`, or plain seconds. When a time range is specified, libpgs seeks directly to the target byte offset — it does not read and discard data before the start point. For MKV files with a Cues index, seeking is exact. For M2TS files, seeking uses binary search refinement to converge on the correct position despite variable bitrate. SUP files use simple bitrate estimation.
 
 If no display sets fall within the requested range, libpgs reports zero results with no error.
 

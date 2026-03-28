@@ -116,10 +116,10 @@ src/
 ## CLI
 
 ```
-libpgs tracks <file>                       # List PGS tracks
-libpgs extract <file> -o <out> [-t <id>]   # Extract to .sup
-libpgs stream <file> [-t <id>] [--raw-payloads]  # Stream NDJSON to stdout
-libpgs bench <file>                        # Benchmark I/O efficiency
+libpgs tracks <file>                                                        # List PGS tracks
+libpgs extract <file> -o <out> [-t <id>] [--start T] [--end T]             # Extract to .sup
+libpgs stream <file> [-t <id>] [--raw-payloads] [--start T] [--end T]      # Stream NDJSON to stdout
+libpgs bench <file>                                                         # Benchmark I/O efficiency
 ```
 
 `extract` and `stream` accept `--start` and `--end` timestamps (`HH:MM:SS.ms`, `MM:SS.ms`, `SS.ms`, or plain seconds) to limit extraction to a time window. Seeks directly to the estimated offset — does not scan data before the start point.

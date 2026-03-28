@@ -9,12 +9,12 @@ This enables any language to consume PGS data incrementally via a subprocess pip
 ## Usage
 
 ```bash
-libpgs stream <file>                      # All tracks
-libpgs stream <file> -t 3                 # Single track
-libpgs stream <file> -t 3 -t 5            # Multiple tracks
-libpgs stream <file> --raw-payloads       # Include base64 raw segment bytes
-libpgs stream <file> --start 0:05:00      # From 5 minutes to end of file
-libpgs stream <file> --start 0:05:00 --end 0:10:00  # 5-minute window only
+libpgs stream <file>                                 # All tracks
+libpgs stream <file> -t 3                            # Single track
+libpgs stream <file> -t 3 -t 5                       # Multiple tracks
+libpgs stream <file> --raw-payloads                  # Include base64 raw segment bytes
+libpgs stream <file> --start 0:05:00                 # From 5 minutes to end of file
+libpgs stream <file> --start 0:05:00 --end 0:10:00   # 5-minute window only
 ```
 
 Timestamps accept `HH:MM:SS.ms`, `MM:SS.ms`, `SS.ms`, or plain seconds (e.g., `300`). When `--start` or `--end` is specified, libpgs seeks directly to the estimated byte offset — data before the start point is not read. If no display sets fall within the range, the stream outputs the tracks header followed by EOF (no error).
