@@ -122,7 +122,7 @@ The `stream` command exposes the `Extractor` streaming API over stdout as newlin
 
 **Line 1 — track discovery:**
 ```json
-{"type":"tracks","tracks":[{"track_id":3,"language":"eng","container":"Matroska","name":"English Subtitles","is_default":true,"is_forced":false,"display_set_count":1234,"indexed":true}]}
+{"type":"tracks","tracks":[{"track_id":3,"language":"en","container":"Matroska","name":"English Subtitles","is_default":true,"is_forced":false,"display_set_count":1234,"indexed":true}]}
 ```
 
 Track fields: `track_id`, `language` (nullable), `container`, `name` (nullable, MKV TrackName), `is_default` (nullable bool), `is_forced` (nullable bool), `display_set_count` (nullable, from MKV Tags NUMBER_OF_FRAMES), `indexed` (nullable bool, MKV only). M2TS tracks have `null` for MKV-specific fields.

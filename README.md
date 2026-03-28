@@ -57,7 +57,7 @@ The `stream` command outputs newline-delimited JSON (NDJSON) to stdout, allowing
 The first line is a track discovery message with all available metadata:
 
 ```json
-{"type":"tracks","tracks":[{"track_id":3,"language":"eng","container":"Matroska","name":"English Subtitles","is_default":true,"is_forced":false,"display_set_count":1234,"indexed":true}]}
+{"type":"tracks","tracks":[{"track_id":3,"language":"en","container":"Matroska","name":"English Subtitles","is_default":true,"is_forced":false,"display_set_count":1234,"indexed":true}]}
 ```
 
 Each subsequent line is a display set with fully parsed segment data organized into semantic sections — composition, windows, palettes, and objects:

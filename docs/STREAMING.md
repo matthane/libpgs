@@ -38,7 +38,7 @@ The first line describes all PGS tracks found in the container.
   "tracks": [
     {
       "track_id": 3,
-      "language": "eng",
+      "language": "en",
       "container": "Matroska",
       "name": "English Subtitles",
       "is_default": true,
@@ -55,7 +55,7 @@ The first line describes all PGS tracks found in the container.
 | Field | Type | Description |
 |-------|------|-------------|
 | `track_id` | `number` | Unique track identifier within the container |
-| `language` | `string \| null` | ISO 639 language code (e.g., `"eng"`, `"jpn"`) |
+| `language` | `string \| null` | BCP 47 language code (e.g., `"en"`, `"ja"`). Uses ISO 639-1 (2-letter) where available, ISO 639-2/T (3-letter) otherwise. |
 | `container` | `string` | Source format: `"Matroska"`, `"M2TS"`, `"TransportStream"`, or `"SUP"` |
 | `name` | `string \| null` | Track name from container metadata (MKV TrackName). `null` for M2TS. |
 | `is_default` | `boolean \| null` | Whether this track is flagged as default. `null` for M2TS. |
