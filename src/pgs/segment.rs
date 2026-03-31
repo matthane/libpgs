@@ -62,6 +62,14 @@ impl CompositionState {
             _ => None,
         }
     }
+
+    pub fn to_byte(self) -> u8 {
+        match self {
+            CompositionState::Normal => 0x00,
+            CompositionState::AcquisitionPoint => 0x40,
+            CompositionState::EpochStart => 0x80,
+        }
+    }
 }
 
 /// A single PGS segment with its header fields and raw payload.
@@ -230,6 +238,84 @@ impl PgsSegment {
         }
         super::payload::OdsData::parse(&self.payload)
     }
+
+    // -- Factory methods --
+
+    /// Create a PCS segment from structured payload data.
+    pub fn from_pcs(pts: u64, dts: u64, pcs: &super::payload::PcsData) -> Self {
+        PgsSegment {
+            pts,
+            dts,
+            segment_type: SegmentType::PresentationComposition,
+            payload: pcs.to_bytes(),
+        }
+    }
+
+    /// Create a WDS segment from structured payload data.
+    pub fn from_wds(pts: u64, dts: u64, wds: &super::payload::WdsData) -> Self {
+        PgsSegment {
+            pts,
+            dts,
+            segment_type: SegmentType::WindowDefinition,
+            payload: wds.to_bytes(),
+        }
+    }
+
+    /// Create a PDS segment from structured payload data.
+    pub fn from_pds(pts: u64, dts: u64, pds: &super::payload::PdsData) -> Self {
+        PgsSegment {
+            pts,
+            dts,
+            segment_type: SegmentType::PaletteDefinition,
+            payload: pds.to_bytes(),
+        }
+    }
+
+    /// Create an ODS segment from structured payload data.
+    pub fn from_ods(pts: u64, dts: u64, ods: &super::payload::OdsData) -> Self {
+        PgsSegment {
+            pts,
+            dts,
+            segment_type: SegmentType::ObjectDefinition,
+            payload: ods.to_bytes(),
+        }
+    }
+
+    /// Create an END segment.
+    pub fn end_segment(pts: u64, dts: u64) -> Self {
+        PgsSegment {
+            pts,
+            dts,
+            segment_type: SegmentType::EndOfDisplaySet,
+            payload: Vec::new(),
+        }
+    }
+
+    // -- Payload update methods --
+
+    /// Replace this segment's payload with the serialized PCS data.
+    pub fn set_pcs_payload(&mut self, pcs: &super::payload::PcsData) {
+        debug_assert_eq!(self.segment_type, SegmentType::PresentationComposition);
+        self.payload = pcs.to_bytes();
+    }
+
+    /// Replace this segment's payload with the serialized WDS data.
+    pub fn set_wds_payload(&mut self, wds: &super::payload::WdsData) {
+        debug_assert_eq!(self.segment_type, SegmentType::WindowDefinition);
+        self.payload = wds.to_bytes();
+    }
+
+    /// Replace this segment's payload with the serialized PDS data.
+    pub fn set_pds_payload(&mut self, pds: &super::payload::PdsData) {
+        debug_assert_eq!(self.segment_type, SegmentType::PaletteDefinition);
+        self.payload = pds.to_bytes();
+    }
+
+    /// Replace this segment's payload with the serialized ODS data.
+    pub fn set_ods_payload(&mut self, ods: &super::payload::OdsData) {
+        debug_assert_eq!(self.segment_type, SegmentType::ObjectDefinition);
+        self.payload = ods.to_bytes();
+    }
 }
 
 #[cfg(test)]
@@ -276,5 +362,99 @@ mod tests {
     fn test_invalid_magic() {
         let data = [0x00, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0x80, 0, 0];
         assert!(PgsSegment::parse(&data).is_err());
+    }
+
+    #[test]
+    fn test_from_pcs_roundtrip() {
+        use super::super::payload::{PcsData, CompositionObject};
+        let pcs = PcsData {
+            video_width: 1920,
+            video_height: 1080,
+            composition_number: 5,
+            composition_state: CompositionState::EpochStart,
+            palette_only: false,
+            palette_id: 0,
+            objects: vec![CompositionObject {
+                object_id: 0,
+                window_id: 0,
+                x: 100,
+                y: 200,
+                crop: None,
+            }],
+        };
+        let seg = PgsSegment::from_pcs(90000, 0, &pcs);
+        assert_eq!(seg.segment_type, SegmentType::PresentationComposition);
+        let parsed = seg.parse_pcs().unwrap();
+        assert_eq!(parsed.video_width, 1920);
+        assert_eq!(parsed.composition_number, 5);
+        assert_eq!(parsed.objects.len(), 1);
+    }
+
+    #[test]
+    fn test_from_wds_roundtrip() {
+        use super::super::payload::{WdsData, WindowDefinition};
+        let wds = WdsData {
+            windows: vec![WindowDefinition {
+                id: 0, x: 50, y: 60, width: 300, height: 40,
+            }],
+        };
+        let seg = PgsSegment::from_wds(90000, 0, &wds);
+        let parsed = seg.parse_wds().unwrap();
+        assert_eq!(parsed.windows[0].width, 300);
+    }
+
+    #[test]
+    fn test_from_pds_roundtrip() {
+        use super::super::payload::{PdsData, PaletteEntry};
+        let pds = PdsData {
+            id: 0, version: 0,
+            entries: vec![PaletteEntry { id: 1, luminance: 200, cr: 128, cb: 128, alpha: 255 }],
+        };
+        let seg = PgsSegment::from_pds(90000, 0, &pds);
+        let parsed = seg.parse_pds().unwrap();
+        assert_eq!(parsed.entries[0].luminance, 200);
+    }
+
+    #[test]
+    fn test_from_ods_roundtrip() {
+        use super::super::payload::{OdsData, SequenceFlag};
+        let ods = OdsData {
+            id: 0, version: 0,
+            sequence: SequenceFlag::Complete,
+            data_length: 0, // will be recomputed by to_bytes
+            width: Some(10), height: Some(5),
+            rle_data: vec![0x01, 0x02, 0x03],
+        };
+        let seg = PgsSegment::from_ods(90000, 0, &ods);
+        let parsed = seg.parse_ods().unwrap();
+        assert_eq!(parsed.width, Some(10));
+        assert_eq!(parsed.rle_data, vec![0x01, 0x02, 0x03]);
+    }
+
+    #[test]
+    fn test_end_segment() {
+        let seg = PgsSegment::end_segment(90000, 0);
+        assert_eq!(seg.segment_type, SegmentType::EndOfDisplaySet);
+        assert!(seg.payload.is_empty());
+    }
+
+    #[test]
+    fn test_set_pds_payload() {
+        use super::super::payload::{PdsData, PaletteEntry};
+        let pds = PdsData {
+            id: 0, version: 0,
+            entries: vec![PaletteEntry { id: 0, luminance: 16, cr: 128, cb: 128, alpha: 0 }],
+        };
+        let mut seg = PgsSegment::from_pds(90000, 0, &pds);
+        let original_bytes = seg.payload.clone();
+
+        // Modify and update
+        let mut new_pds = seg.parse_pds().unwrap();
+        new_pds.entries[0].luminance = 235;
+        seg.set_pds_payload(&new_pds);
+
+        assert_ne!(seg.payload, original_bytes);
+        let reparsed = seg.parse_pds().unwrap();
+        assert_eq!(reparsed.entries[0].luminance, 235);
     }
 }

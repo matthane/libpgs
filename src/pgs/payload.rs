@@ -18,6 +18,16 @@ fn u24_be(data: &[u8], offset: usize) -> u32 {
     ((data[offset] as u32) << 16) | ((data[offset + 1] as u32) << 8) | (data[offset + 2] as u32)
 }
 
+fn push_u16_be(buf: &mut Vec<u8>, val: u16) {
+    buf.extend_from_slice(&val.to_be_bytes());
+}
+
+fn push_u24_be(buf: &mut Vec<u8>, val: u32) {
+    buf.push((val >> 16) as u8);
+    buf.push((val >> 8) as u8);
+    buf.push(val as u8);
+}
+
 // ---------------------------------------------------------------------------
 // PCS — Presentation Composition Segment (0x16)
 // ---------------------------------------------------------------------------
@@ -119,6 +129,35 @@ impl PcsData {
             objects,
         })
     }
+
+    /// Serialize this PCS payload to bytes (reverse of `parse`).
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut buf = Vec::new();
+        push_u16_be(&mut buf, self.video_width);
+        push_u16_be(&mut buf, self.video_height);
+        buf.push(0x10); // frame rate (constant)
+        push_u16_be(&mut buf, self.composition_number);
+        buf.push(self.composition_state.to_byte());
+        buf.push(if self.palette_only { 0x80 } else { 0x00 });
+        buf.push(self.palette_id);
+        buf.push(self.objects.len() as u8);
+
+        for obj in &self.objects {
+            push_u16_be(&mut buf, obj.object_id);
+            buf.push(obj.window_id);
+            buf.push(if obj.crop.is_some() { 0x80 } else { 0x00 });
+            push_u16_be(&mut buf, obj.x);
+            push_u16_be(&mut buf, obj.y);
+            if let Some(crop) = &obj.crop {
+                push_u16_be(&mut buf, crop.x);
+                push_u16_be(&mut buf, crop.y);
+                push_u16_be(&mut buf, crop.width);
+                push_u16_be(&mut buf, crop.height);
+            }
+        }
+
+        buf
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -168,6 +207,20 @@ impl WdsData {
         }
 
         Some(WdsData { windows })
+    }
+
+    /// Serialize this WDS payload to bytes (reverse of `parse`).
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.push(self.windows.len() as u8);
+        for w in &self.windows {
+            buf.push(w.id);
+            push_u16_be(&mut buf, w.x);
+            push_u16_be(&mut buf, w.y);
+            push_u16_be(&mut buf, w.width);
+            push_u16_be(&mut buf, w.height);
+        }
+        buf
     }
 }
 
@@ -228,6 +281,21 @@ impl PdsData {
             entries,
         })
     }
+
+    /// Serialize this PDS payload to bytes (reverse of `parse`).
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(2 + self.entries.len() * 5);
+        buf.push(self.id);
+        buf.push(self.version);
+        for e in &self.entries {
+            buf.push(e.id);
+            buf.push(e.luminance);
+            buf.push(e.cr);
+            buf.push(e.cb);
+            buf.push(e.alpha);
+        }
+        buf
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -258,6 +326,15 @@ impl SequenceFlag {
         }
     }
 
+    pub fn to_byte(self) -> u8 {
+        match self {
+            SequenceFlag::Complete => 0xC0,
+            SequenceFlag::First => 0x80,
+            SequenceFlag::Last => 0x40,
+            SequenceFlag::Continuation => 0x00,
+        }
+    }
+
     /// Returns the JSON string representation.
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -281,6 +358,8 @@ pub struct OdsData {
     pub width: Option<u16>,
     /// Image height — present only on `Complete` or `First` fragments.
     pub height: Option<u16>,
+    /// Raw RLE bitmap bytes (after the ODS header).
+    pub rle_data: Vec<u8>,
 }
 
 impl OdsData {
@@ -298,7 +377,7 @@ impl OdsData {
 
         // Only First/Complete fragments have data_length + width + height after
         // the 4-byte header. Continuation/Last fragments go straight to RLE data.
-        let (data_length, width, height) = if is_first {
+        let (data_length, width, height, rle_offset) = if is_first {
             if payload.len() < 11 {
                 return None;
             }
@@ -306,10 +385,13 @@ impl OdsData {
                 u24_be(payload, 4),
                 Some(u16_be(payload, 7)),
                 Some(u16_be(payload, 9)),
+                11,
             )
         } else {
-            (0, None, None)
+            (0, None, None, 4)
         };
+
+        let rle_data = payload[rle_offset..].to_vec();
 
         Some(OdsData {
             id,
@@ -318,7 +400,27 @@ impl OdsData {
             data_length,
             width,
             height,
+            rle_data,
         })
+    }
+
+    /// Serialize this ODS payload to bytes (reverse of `parse`).
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let is_first = matches!(self.sequence, SequenceFlag::Complete | SequenceFlag::First);
+        let mut buf = Vec::new();
+        push_u16_be(&mut buf, self.id);
+        buf.push(self.version);
+        buf.push(self.sequence.to_byte());
+
+        if is_first {
+            let data_length = self.rle_data.len() as u32 + 4; // +4 for width+height
+            push_u24_be(&mut buf, data_length);
+            push_u16_be(&mut buf, self.width.unwrap_or(0));
+            push_u16_be(&mut buf, self.height.unwrap_or(0));
+        }
+
+        buf.extend_from_slice(&self.rle_data);
+        buf
     }
 }
 
@@ -643,5 +745,111 @@ mod tests {
         assert_eq!(SequenceFlag::First.as_str(), "first");
         assert_eq!(SequenceFlag::Last.as_str(), "last");
         assert_eq!(SequenceFlag::Continuation.as_str(), "continuation");
+    }
+
+    // -- Round-trip tests (to_bytes -> parse) --
+
+    #[test]
+    fn test_pcs_roundtrip_no_objects() {
+        let payload = vec![
+            0x07, 0x80, 0x04, 0x38, 0x10,
+            0x00, 0x01, 0x80, 0x00, 0x00, 0x00,
+        ];
+        let pcs = PcsData::parse(&payload).unwrap();
+        assert_eq!(pcs.to_bytes(), payload);
+    }
+
+    #[test]
+    fn test_pcs_roundtrip_with_object() {
+        let payload = vec![
+            0x07, 0x80, 0x04, 0x38, 0x10,
+            0x01, 0xAE, 0x80, 0x00, 0x00, 0x01,
+            0x00, 0x00, 0x00, 0x00, 0x03, 0x05, 0x00, 0x6C,
+        ];
+        let pcs = PcsData::parse(&payload).unwrap();
+        assert_eq!(pcs.to_bytes(), payload);
+    }
+
+    #[test]
+    fn test_pcs_roundtrip_cropped() {
+        let payload = vec![
+            0x07, 0x80, 0x04, 0x38, 0x10,
+            0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+            0x00, 0x01, 0x00, 0x80, 0x00, 0x64, 0x00, 0xC8,
+            0x00, 0x0A, 0x00, 0x14, 0x00, 0x50, 0x00, 0x28,
+        ];
+        let pcs = PcsData::parse(&payload).unwrap();
+        assert_eq!(pcs.to_bytes(), payload);
+    }
+
+    #[test]
+    fn test_wds_roundtrip() {
+        let payload = vec![
+            0x02,
+            0x00, 0x03, 0x05, 0x00, 0x6C, 0x01, 0x79, 0x00, 0x2B,
+            0x01, 0x02, 0xE3, 0x03, 0xA0, 0x01, 0xD8, 0x00, 0x2B,
+        ];
+        let wds = WdsData::parse(&payload).unwrap();
+        assert_eq!(wds.to_bytes(), payload);
+    }
+
+    #[test]
+    fn test_pds_roundtrip() {
+        let payload = vec![
+            0x00, 0x00,
+            0x00, 0x10, 0x80, 0x80, 0x00,
+            0x01, 0x10, 0x80, 0x80, 0xFF,
+            0xFF, 0xEB, 0x80, 0x80, 0xFF,
+        ];
+        let pds = PdsData::parse(&payload).unwrap();
+        assert_eq!(pds.to_bytes(), payload);
+    }
+
+    #[test]
+    fn test_ods_roundtrip_complete() {
+        let payload = vec![
+            0x00, 0x00, 0x00, 0xC0,
+            0x00, 0x00, 0x07, // data_length: 3 + 4 = 7
+            0x01, 0x79, 0x00, 0x2B,
+            0x00, 0x01, 0x02,
+        ];
+        let ods = OdsData::parse(&payload).unwrap();
+        assert_eq!(ods.rle_data, vec![0x00, 0x01, 0x02]);
+        assert_eq!(ods.to_bytes(), payload);
+    }
+
+    #[test]
+    fn test_ods_roundtrip_continuation() {
+        let payload = vec![
+            0x00, 0x00, 0x01, 0x00,
+            0xAA, 0xBB,
+        ];
+        let ods = OdsData::parse(&payload).unwrap();
+        assert_eq!(ods.rle_data, vec![0xAA, 0xBB]);
+        assert_eq!(ods.to_bytes(), payload);
+    }
+
+    #[test]
+    fn test_ods_roundtrip_last() {
+        let payload = vec![
+            0x00, 0x01, 0x00, 0x40,
+            0xCC, 0xDD,
+        ];
+        let ods = OdsData::parse(&payload).unwrap();
+        assert_eq!(ods.to_bytes(), payload);
+    }
+
+    #[test]
+    fn test_sequence_flag_roundtrip() {
+        for flag in [SequenceFlag::Complete, SequenceFlag::First, SequenceFlag::Last, SequenceFlag::Continuation] {
+            assert_eq!(SequenceFlag::from_byte(flag.to_byte()), Some(flag));
+        }
+    }
+
+    #[test]
+    fn test_composition_state_roundtrip() {
+        for state in [CompositionState::Normal, CompositionState::AcquisitionPoint, CompositionState::EpochStart] {
+            assert_eq!(CompositionState::from_byte(state.to_byte()), Some(state));
+        }
     }
 }

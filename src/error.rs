@@ -21,6 +21,8 @@ pub enum PgsError {
     TrackNotFound(u32),
     /// Container format could not be detected.
     UnknownFormat,
+    /// Error during PGS encoding or segment construction.
+    EncodingError(String),
 }
 
 impl fmt::Display for PgsError {
@@ -35,6 +37,7 @@ impl fmt::Display for PgsError {
             PgsError::NoPgsTracks => write!(f, "no PGS tracks found"),
             PgsError::TrackNotFound(id) => write!(f, "track {id} not found"),
             PgsError::UnknownFormat => write!(f, "unknown container format"),
+            PgsError::EncodingError(msg) => write!(f, "encoding error: {msg}"),
         }
     }
 }
