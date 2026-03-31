@@ -2,7 +2,7 @@
 
 ## What is this project?
 
-libpgs is a Rust library + CLI for extracting PGS (Presentation Graphic Stream) subtitles from MKV and M2TS/TS containers. It is designed to extract only PGS data with minimal I/O — skipping video/audio entirely.
+libpgs is a Rust library + CLI for extracting, encoding, and transforming PGS (Presentation Graphic Stream) subtitles from MKV and M2TS/TS containers. It extracts PGS data with minimal I/O — skipping video/audio entirely — and supports round-trip workflows: read, modify, and write back PGS data.
 
 ## Build & test
 
@@ -28,10 +28,10 @@ src/
 ├── io/
 │   └── reader.rs       # SeekBufReader — buffered I/O with position tracking
 ├── pgs/
-│   ├── segment.rs      # PgsSegment: parse/serialize PGS segments
-│   ├── payload.rs      # PGS segment payload parsing (PCS, WDS, PDS, ODS)
-│   ├── rle.rs          # PGS RLE bitmap decoder (palette indices)
-│   └── display_set.rs  # DisplaySet + DisplaySetAssembler (push-based state machine)
+│   ├── segment.rs      # PgsSegment: parse/serialize PGS segments, factory methods
+│   ├── payload.rs      # PGS segment payload parsing + serialization (PCS, WDS, PDS, ODS)
+│   ├── rle.rs          # PGS RLE bitmap decoder + encoder (palette indices)
+│   └── display_set.rs  # DisplaySet, DisplaySetAssembler, DisplaySetBuilder
 ├── ebml/
 │   ├── mod.rs          # EBML element ID constants
 │   └── vint.rs         # Variable-length integer codec
@@ -85,7 +85,10 @@ src/
 - `Extractor` — streaming iterator, the central API
 - `TrackDisplaySet` — a display set annotated with track_id, language, container
 - `DisplaySet` — PTS + composition state + ordered segments
-- `PgsSegment` — type + PTS/DTS + payload, with serialize support
+- `DisplaySetBuilder` — builder for constructing display sets from structured payload types (chainable API with automatic RLE encoding and ODS fragmentation)
+- `ObjectBitmap` — a complete object bitmap (id, dimensions, pixel buffer) for encoding into ODS segments
+- `PgsSegment` — type + PTS/DTS + payload, with serialize support and factory methods (`from_pcs`, `from_wds`, `from_pds`, `from_ods`, `end_segment`)
+- `PcsData` / `WdsData` / `PdsData` / `OdsData` — parsed payload types, each with `parse()` and `to_bytes()` for round-trip serialization. `OdsData` includes `rle_data` field for self-contained RLE bitmap bytes
 - `DisplaySetAssembler` — push-based state machine: PCS opens, END closes
 - `PesReassembler` — M2TS PES packet reassembly per PID
 - `MkvExtractorState` / `M2tsExtractorState` — format-specific streaming state machines
@@ -113,6 +116,19 @@ src/
 **Utilities:**
 - `list_pgs_tracks(path)` → discover tracks without extraction
 - `write_sup_file(display_sets, output)` → write .sup file
+
+**Encoding / round-trip:**
+- `DisplaySetBuilder::new(pts)` → builder for constructing display sets from scratch
+  - `.pcs(PcsData)` → set composition (required)
+  - `.wds(WdsData)` → set window definitions (optional)
+  - `.palette(PdsData)` → add palette (repeatable)
+  - `.object(ObjectBitmap)` → add bitmap object (repeatable, auto RLE-encoded and fragmented)
+  - `.build()` → `Result<DisplaySet, PgsError>`
+- `encode_rle(pixels, width, height)` → RLE-encode a pixel buffer
+- `decode_rle(rle_data, width, height)` → decode RLE to pixels
+- Payload types (`PcsData`, `WdsData`, `PdsData`, `OdsData`) all have `to_bytes()` for serialization
+- `PgsSegment::from_pcs/wds/pds/ods()` → create segments from payload types
+- `PgsSegment::set_pcs/wds/pds/ods_payload()` → update segment payloads in-place
 
 ## CLI
 
@@ -154,7 +170,7 @@ Key fields: `composition.state` (`normal`/`acquisition_point`/`epoch_start`), `c
 - State machines for streaming (MkvBlockSource enum, M2tsExtractorState)
 - Tests use production code paths (e.g., M2tsExtractorState with temp files), not test-only helpers
 - Constants for tuning: `MKV_PROBE_THRESHOLD`, `CLUSTER_PROBE_SIZE`, `SCAN_BLOCK_SIZE`, `M2TS_BUF_SIZE`
-- Error handling via `PgsError` enum with `?` propagation throughout
+- Error handling via `PgsError` enum (including `EncodingError` for encoding/builder failures) with `?` propagation throughout
 
 ## Release hygiene
 
