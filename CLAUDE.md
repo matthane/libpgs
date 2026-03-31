@@ -144,7 +144,7 @@ libpgs bench <file>                                                         # Be
 
 ### Stream command (NDJSON protocol)
 
-The `stream` command exposes the `Extractor` streaming API over stdout as newline-delimited JSON, enabling any language to consume PGS data incrementally via a subprocess pipe — no temp files or waiting for full extraction. See `docs/STREAMING.md` for the full consumer reference.
+The `stream` command exposes the `Extractor` streaming API over stdout as newline-delimited JSON, enabling any language to consume PGS data incrementally via a subprocess pipe — no temp files or waiting for full extraction. See `docs/NDJSON.md` for the full protocol reference.
 
 **Line 1 — track discovery:**
 ```json

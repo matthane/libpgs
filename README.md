@@ -146,7 +146,7 @@ Each subsequent line is a display set with fully parsed segment data organized i
 
 The `index` field is a 0-based per-track sequence number. Combined with `display_set_count` from the tracks header, consumers can calculate extraction progress. Pass `--raw-payloads` to include base64-encoded raw segment bytes alongside the parsed data.
 
-See [docs/STREAMING.md](docs/STREAMING.md) for the complete schema reference, field tables, cross-reference diagram, and usage examples.
+See [docs/NDJSON.md](docs/NDJSON.md) for the complete schema reference, field tables, cross-reference diagram, and usage examples.
 
 Example Python consumer:
 

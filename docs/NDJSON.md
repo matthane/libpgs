@@ -1,10 +1,10 @@
-# libpgs Streaming Output Reference
+# libpgs NDJSON Streaming & Encoding Reference
 
 ## Overview
 
-The `libpgs stream` command extracts PGS (Presentation Graphic Stream) subtitles from MKV and M2TS containers and outputs structured data as newline-delimited JSON (NDJSON) to stdout. Each line is a self-contained JSON object.
+The `libpgs stream` command extracts PGS (Presentation Graphic Stream) subtitles from MKV and M2TS containers and outputs structured data as newline-delimited JSON (NDJSON) to stdout. The `libpgs encode` command reads the same format from stdin and writes `.sup` files. Together they enable full round-trip workflows: extract, transform with any language, and write back.
 
-This enables any language to consume PGS data incrementally via a subprocess pipe — no temp files, no waiting for full extraction, no PGS format knowledge required.
+Each NDJSON line is a self-contained JSON object. This enables any language to consume and produce PGS data via subprocess pipes — no temp files, no waiting for full extraction, no PGS format knowledge required.
 
 ## Usage
 
@@ -400,6 +400,93 @@ for line in sys.stdin:
         break  # first object only
     break  # first display set only
 ```
+
+---
+
+## Encoding (NDJSON → .sup)
+
+The `libpgs encode` command reads the same NDJSON format that `stream` produces and writes a `.sup` file. This closes the round-trip loop — extract, transform with any language, and write back:
+
+```bash
+libpgs stream movie.mkv | python modify.py | libpgs encode -o modified.sup
+```
+
+### Usage
+
+```bash
+libpgs encode -o <output.sup>       # Reads NDJSON from stdin
+```
+
+### Field handling
+
+The encode command consumes `display_set` lines and ignores `tracks` lines (and blank lines). Each display set is rebuilt from its structured fields using `DisplaySetBuilder`, which handles RLE encoding and ODS fragmentation automatically.
+
+| Field | Handling |
+|-------|----------|
+| `pts` | Primary timestamp source (90 kHz ticks). Used as-is. |
+| `pts_ms` | Fallback: if `pts` is absent, computes `pts = round(pts_ms * 90)`. |
+| `track_id` | Honored. Multiple track IDs produce separate output files. |
+| `index` | Ignored. Display sets are written in input order. |
+| `composition` | Required. Display sets with `null` composition are skipped with a stderr warning. |
+| `composition.state` | Required. Must be `"epoch_start"`, `"acquisition_point"`, or `"normal"`. |
+| `composition.objects[]` | Honored, including optional `crop` fields. |
+| `windows` | Optional. Passed through to WDS segments when present. |
+| `palettes` | Optional. All entries honored (id, luminance, cr, cb, alpha). |
+| `objects` | Optional. The `bitmap` field (base64 palette indices) is re-encoded to RLE. |
+| `objects[].bitmap` | Required per object. Base64-decoded, then RLE-encoded and fragmented as needed. |
+| `data_length` | Ignored. Recomputed from the re-encoded bitmap. |
+| `sequence` | Ignored. Recomputed based on re-encoded size and fragmentation. |
+
+### Multi-track output
+
+If all display sets share the same `track_id` (or none is specified), the output is written directly to the `-o` path. If multiple `track_id` values appear, encode splits the output into separate files:
+
+```
+output.sup          → output_track3.sup, output_track5.sup, ...
+```
+
+### Round-trip example (Python)
+
+```python
+import subprocess, json, base64, sys
+
+# Stream from source
+stream = subprocess.Popen(
+    ["libpgs", "stream", "movie.mkv"],
+    stdout=subprocess.PIPE, text=True
+)
+
+# Encode to output
+encode = subprocess.Popen(
+    ["libpgs", "encode", "-o", "modified.sup"],
+    stdin=subprocess.PIPE, text=True
+)
+
+for line in stream.stdout:
+    msg = json.loads(line)
+    if msg["type"] == "display_set":
+        # Example: brighten all palette entries
+        for palette in msg.get("palettes", []):
+            for entry in palette["entries"]:
+                entry["luminance"] = min(255, entry["luminance"] + 20)
+    encode.stdin.write(json.dumps(msg) + "\n")
+
+encode.stdin.close()
+encode.wait()
+stream.wait()
+```
+
+### Error handling
+
+Errors include 1-based line numbers for easy debugging:
+
+```
+line 42: missing field 'composition'
+line 108: 'pts' is not a number
+line 203: palette entry missing 'luminance'
+```
+
+Display sets with `null` composition are skipped with a stderr warning rather than aborting, so partially malformed input can still produce output for the valid display sets.
 
 ---
 
