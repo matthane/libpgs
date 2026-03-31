@@ -111,6 +111,7 @@ The `DisplaySetBuilder` handles RLE encoding automatically and fragments large b
 libpgs tracks <file>                                                        # List PGS tracks
 libpgs extract <file> -o <out> [-t <id>] [--start T] [--end T]              # Extract to .sup
 libpgs stream <file> [-t <id>] [--raw-payloads] [--start T] [--end T]       # Stream NDJSON to stdout
+libpgs encode -o <output.sup>                                               # Encode NDJSON stdin to .sup
 libpgs bench <file>                                                         # Benchmark I/O efficiency
 ```
 
@@ -176,6 +177,20 @@ for line in proc.stdout:
         print(f"Track {tid} @ {msg['pts_ms']:.1f}ms — "
               f"{comp.get('state', '?')} {n_objects} objects{progress}")
 ```
+
+### Encoding from NDJSON
+
+The `encode` command reads the same NDJSON format that `stream` produces, enabling full round-trip workflows:
+
+```bash
+# Extract, modify with an external script, and re-encode
+libpgs stream movie.mkv | python modify.py | libpgs encode -o modified.sup
+
+# Or pipe stream directly back to encode (identity round-trip)
+libpgs stream movie.mkv | libpgs encode -o roundtrip.sup
+```
+
+The encode command reads from stdin and writes a `.sup` file. It accepts the `pts` field (90kHz integer ticks) as the primary timestamp; if absent, it falls back to `pts_ms * 90`. Track metadata lines (`{"type":"tracks",...}`) are silently skipped. If the input contains multiple `track_id` values, encode splits the output into separate files (`<stem>_track<id>.sup`).
 
 ## License
 

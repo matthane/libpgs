@@ -136,6 +136,7 @@ src/
 libpgs tracks <file>                                                        # List PGS tracks
 libpgs extract <file> -o <out> [-t <id>] [--start T] [--end T]             # Extract to .sup
 libpgs stream <file> [-t <id>] [--raw-payloads] [--start T] [--end T]      # Stream NDJSON to stdout
+libpgs encode -o <output.sup>                                               # Encode NDJSON stdin to .sup
 libpgs bench <file>                                                         # Benchmark I/O efficiency
 ```
 
@@ -163,6 +164,10 @@ Display sets use semantic grouping instead of a flat segment array. PCS data is 
 Key fields: `composition.state` (`normal`/`acquisition_point`/`epoch_start`), `composition.objects[]` (placement instructions cross-referencing `objects[].id` and `windows[].id`), `palettes[].entries[]` (YCrCb+alpha colors), `objects[].sequence` (`complete`/`first`/`last`/`reassembled`), `objects[].bitmap` (base64 palette indices, 1 byte per pixel, row-major). Fragmented objects are automatically reassembled.
 
 **`--raw-payloads` flag:** When passed, each semantic item includes a `"payload"` field with base64-encoded raw segment bytes. Omitted by default.
+
+### Encode command (NDJSON → .sup)
+
+The `encode` command reads the same NDJSON format that `stream` produces from stdin and writes a `.sup` file. This closes the round-trip loop for external scripts: `stream | modify | encode`. Uses a hand-rolled JSON parser (no serde dependency) adapted from the test suite with `Result`-based error handling. Multi-track input is split into separate `<stem>_track<id>.sup` files. Timestamps: prefers `pts` (90kHz ticks), falls back to `pts_ms * 90`.
 
 ## Code conventions
 
