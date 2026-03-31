@@ -1,6 +1,6 @@
 # libpgs
 
-A Rust library and CLI for extracting and parsing PGS (Presentation Graphic Stream) subtitles from MKV and M2TS/TS containers.
+A Rust library and CLI for extracting, encoding, and transforming PGS (Presentation Graphic Stream) subtitles from MKV and M2TS/TS containers.
 
 > **Note:** This project is under active development.
 
@@ -48,6 +48,62 @@ for track in &by_track {
     println!("{}: {} display sets", track.track.track_id, track.display_sets.len());
 }
 ```
+
+### Encoding and round-trip
+
+libpgs supports full round-trip workflows: extract display sets, modify them, and write the result back as a `.sup` file. You can also create PGS display sets from scratch.
+
+```rust
+use libpgs::pgs::*;
+
+// Modify an extracted palette and write back
+let mut extractor = Extractor::open("movie.mkv")?;
+let track_ds = extractor.next().unwrap()?;
+let mut ds = track_ds.display_set;
+
+// Parse, modify, and update a palette segment in-place
+for seg in &mut ds.segments {
+    if let Some(mut pds) = seg.parse_pds() {
+        for entry in &mut pds.entries {
+            entry.luminance = entry.luminance.saturating_add(10); // brighten
+        }
+        seg.set_pds_payload(&pds);
+    }
+}
+libpgs::write_sup_file(&[ds], "modified.sup".as_ref())?;
+
+// Or build a display set from scratch
+let ds = DisplaySetBuilder::new(90_000) // PTS in 90kHz ticks
+    .pcs(PcsData {
+        video_width: 1920,
+        video_height: 1080,
+        composition_number: 0,
+        composition_state: CompositionState::EpochStart,
+        palette_only: false,
+        palette_id: 0,
+        objects: vec![CompositionObject {
+            object_id: 0, window_id: 0, x: 100, y: 900, crop: None,
+        }],
+    })
+    .wds(WdsData {
+        windows: vec![WindowDefinition { id: 0, x: 100, y: 900, width: 200, height: 30 }],
+    })
+    .palette(PdsData {
+        id: 0, version: 0,
+        entries: vec![
+            PaletteEntry { id: 0, luminance: 16, cr: 128, cb: 128, alpha: 0 },
+            PaletteEntry { id: 1, luminance: 235, cr: 128, cb: 128, alpha: 255 },
+        ],
+    })
+    .object(ObjectBitmap {
+        id: 0, version: 0, width: 200, height: 30,
+        pixels: vec![1u8; 200 * 30], // palette index per pixel, row-major
+    })
+    .build()?;
+libpgs::write_sup_file(&[ds], "output.sup".as_ref())?;
+```
+
+The `DisplaySetBuilder` handles RLE encoding automatically and fragments large bitmaps across multiple ODS segments as required by the PGS spec.
 
 ## CLI
 
