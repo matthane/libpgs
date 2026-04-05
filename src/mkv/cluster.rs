@@ -206,7 +206,10 @@ fn extract_pgs_from_block_group<R: Read + Seek>(
 /// Read a single PGS block at a known position within a Cluster.
 ///
 /// `block_position` is the absolute byte position of the SimpleBlock or BlockGroup element.
-/// `cue_time` is the absolute timestamp from the CuePoint (cluster timestamp units).
+/// `cue_time` is the absolute timestamp from the CuePoint. Per the Matroska spec, when
+/// `CueRelativePosition` points at a specific block, `CueTime` is that block's absolute
+/// presentation timestamp — so we use it directly, without adding the block's
+/// cluster-relative timestamp on top.
 /// Returns the PGS block if the block belongs to one of the target tracks, or None.
 pub fn read_block_at_position<R: Read + Seek>(
     reader: &mut SeekBufReader<R>,
@@ -240,7 +243,7 @@ pub fn read_block_at_position<R: Read + Seek>(
 
             Ok(Some(PgsBlock {
                 track_number: header.track_number,
-                timestamp: cue_time as i64 + header.relative_timestamp as i64,
+                timestamp: cue_time as i64,
                 data,
             }))
         }
@@ -271,7 +274,7 @@ pub fn read_block_at_position<R: Read + Seek>(
 
                     return Ok(Some(PgsBlock {
                         track_number: header.track_number,
-                        timestamp: cue_time as i64 + header.relative_timestamp as i64,
+                        timestamp: cue_time as i64,
                         data,
                     }));
                 } else {
