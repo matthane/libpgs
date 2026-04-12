@@ -126,24 +126,17 @@ pub fn decode_rle(rle_data: &[u8], width: u16, height: u16) -> Option<Vec<u8>> {
 
             if flag == 0x00 {
                 // End of line — pad remaining columns with color 0.
-                while col < w && pixels.len() < total {
-                    pixels.push(0);
-                    col += 1;
-                }
+                let remaining_row = w.saturating_sub(col);
+                let room = total - pixels.len();
+                let run = remaining_row.min(room);
+                pixels.resize(pixels.len() + run, 0);
                 col = 0;
             } else {
                 let top2 = flag & 0xC0;
-                match top2 {
+                let (run, color) = match top2 {
                     0x00 => {
                         // 00 00LLLLLL: L pixels of color 0 (L: 1–63)
-                        let run = (flag & 0x3F) as usize;
-                        for _ in 0..run {
-                            if pixels.len() >= total {
-                                break;
-                            }
-                            pixels.push(0);
-                            col += 1;
-                        }
+                        ((flag & 0x3F) as usize, 0u8)
                     }
                     0x40 => {
                         // 00 01LLLLLL LLLLLLLL: L pixels of color 0 (L: 64–16383)
@@ -152,13 +145,7 @@ pub fn decode_rle(rle_data: &[u8], width: u16, height: u16) -> Option<Vec<u8>> {
                         }
                         let run = (((flag & 0x3F) as usize) << 8) | (rle_data[i] as usize);
                         i += 1;
-                        for _ in 0..run {
-                            if pixels.len() >= total {
-                                break;
-                            }
-                            pixels.push(0);
-                            col += 1;
-                        }
+                        (run, 0u8)
                     }
                     0x80 => {
                         // 00 10LLLLLL CCCCCCCC: L pixels of color C (L: 3–63)
@@ -168,13 +155,7 @@ pub fn decode_rle(rle_data: &[u8], width: u16, height: u16) -> Option<Vec<u8>> {
                         let run = (flag & 0x3F) as usize;
                         let color = rle_data[i];
                         i += 1;
-                        for _ in 0..run {
-                            if pixels.len() >= total {
-                                break;
-                            }
-                            pixels.push(color);
-                            col += 1;
-                        }
+                        (run, color)
                     }
                     0xC0 => {
                         // 00 11LLLLLL LLLLLLLL CCCCCCCC: L pixels of color C (L: 64–16383)
@@ -184,23 +165,21 @@ pub fn decode_rle(rle_data: &[u8], width: u16, height: u16) -> Option<Vec<u8>> {
                         let run = (((flag & 0x3F) as usize) << 8) | (rle_data[i] as usize);
                         let color = rle_data[i + 1];
                         i += 2;
-                        for _ in 0..run {
-                            if pixels.len() >= total {
-                                break;
-                            }
-                            pixels.push(color);
-                            col += 1;
-                        }
+                        (run, color)
                     }
                     _ => unreachable!(),
-                }
+                };
+                let room = total - pixels.len();
+                let run = run.min(room);
+                pixels.resize(pixels.len() + run, color);
+                col += run;
             }
         }
     }
 
     // If the RLE data ended without a final EOL, pad remaining pixels.
-    while pixels.len() < total {
-        pixels.push(0);
+    if pixels.len() < total {
+        pixels.resize(total, 0);
     }
 
     if pixels.len() == total {

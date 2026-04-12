@@ -139,6 +139,47 @@ fn history_accumulates_correctly() {
 }
 
 #[test]
+fn with_history_false_skips_catalog_but_yields_same_data() {
+    let fixtures = available_fixtures();
+    if fixtures.is_empty() {
+        return;
+    }
+
+    for fixture in fixtures {
+        // Control: default (history on).
+        let control: Vec<(u32, u64)> = libpgs::Extractor::open(fixture)
+            .expect("open")
+            .map(|r| r.expect("ok"))
+            .map(|tds| (tds.track_id, tds.display_set.pts))
+            .collect();
+
+        // Opted-out.
+        let mut ext = libpgs::Extractor::open(fixture)
+            .expect("open")
+            .with_history(false);
+        let mut seen: Vec<(u32, u64)> = Vec::new();
+        while let Some(r) = ext.next() {
+            let tds = r.expect("ok");
+            seen.push((tds.track_id, tds.display_set.pts));
+            assert!(
+                ext.history().is_empty(),
+                "{fixture}: history must stay empty when disabled"
+            );
+        }
+        assert!(ext.drain_history().is_empty());
+        ext.clear_history();
+        let mut seen_sorted = seen.clone();
+        let mut control_sorted = control.clone();
+        seen_sorted.sort();
+        control_sorted.sort();
+        assert_eq!(
+            seen_sorted, control_sorted,
+            "{fixture}: yielded data must match regardless of history flag"
+        );
+    }
+}
+
+#[test]
 fn drain_history_clears_and_returns() {
     let fixtures = available_fixtures();
     if fixtures.is_empty() {

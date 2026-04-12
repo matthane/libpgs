@@ -148,6 +148,7 @@ enum ExtractorInner {
 pub struct Extractor {
     inner: ExtractorInner,
     catalog: Vec<TrackDisplaySet>,
+    catalog_enabled: bool,
     tracks: Vec<PgsTrackInfo>,
     stats: ExtractionStats,
     path: PathBuf,
@@ -191,6 +192,7 @@ impl Extractor {
                 Ok(Extractor {
                     inner: ExtractorInner::Mkv(Box::new(state)),
                     catalog: Vec::new(),
+                    catalog_enabled: true,
                     tracks,
                     stats: ExtractionStats {
                         file_size,
@@ -221,6 +223,7 @@ impl Extractor {
                 Ok(Extractor {
                     inner: ExtractorInner::M2ts(state),
                     catalog: Vec::new(),
+                    catalog_enabled: true,
                     tracks,
                     stats: ExtractionStats {
                         file_size,
@@ -240,6 +243,7 @@ impl Extractor {
                 Ok(Extractor {
                     inner: ExtractorInner::Sup(state),
                     catalog: Vec::new(),
+                    catalog_enabled: true,
                     tracks,
                     stats: ExtractionStats {
                         file_size,
@@ -268,8 +272,12 @@ impl Extractor {
         let path = self.path.clone();
         let file_size = self.stats.file_size;
 
+        let catalog_enabled = self.catalog_enabled;
         match Self::open_with_strategy(&path, file_size, strategy, None) {
-            Ok(ext) => ext,
+            Ok(mut ext) => {
+                ext.catalog_enabled = catalog_enabled;
+                ext
+            }
             Err(_) => {
                 self.mkv_strategy = strategy;
                 self
@@ -304,10 +312,37 @@ impl Extractor {
         // Reconstruct with the filter applied. Reopens the file and
         // re-parses metadata so the state machine is initialized with
         // only the requested tracks from the start.
+        let catalog_enabled = self.catalog_enabled;
         match Self::open_filtered(&path, file_size, format, track_ids, mkv_strategy) {
-            Ok(ext) => ext,
+            Ok(mut ext) => {
+                ext.catalog_enabled = catalog_enabled;
+                ext
+            }
             Err(_) => self,
         }
+    }
+
+    /// Disable the internal history catalog to avoid cloning each yielded
+    /// display set. Chainable.
+    ///
+    /// By default the `Extractor` retains a clone of every yielded
+    /// [`TrackDisplaySet`] so callers can revisit them via [`history`](Self::history)
+    /// and [`history_for_track`](Self::history_for_track). For pure-streaming
+    /// consumers (e.g. the `stream` CLI subcommand) that never read history,
+    /// calling `with_history(false)` skips the clone and reduces per-frame cost
+    /// for graphically dense subtitles.
+    ///
+    /// When disabled: `history()` returns an empty slice, `drain_history()`
+    /// returns an empty `Vec`, and `clear_history()` is a no-op.
+    ///
+    /// Must be called before the first call to `next()`.
+    #[must_use]
+    pub fn with_history(mut self, enabled: bool) -> Self {
+        self.catalog_enabled = enabled;
+        if !enabled {
+            self.catalog = Vec::new();
+        }
+        self
     }
 
     /// Restrict extraction to a time range. Chainable.
@@ -367,6 +402,7 @@ impl Extractor {
         Ok(Extractor {
             inner: ExtractorInner::Mkv(Box::new(state)),
             catalog: Vec::new(),
+                    catalog_enabled: true,
             tracks,
             stats: ExtractionStats {
                 file_size,
@@ -409,6 +445,7 @@ impl Extractor {
                 Ok(Extractor {
                     inner: ExtractorInner::M2ts(state),
                     catalog: Vec::new(),
+                    catalog_enabled: true,
                     tracks,
                     stats: ExtractionStats {
                         file_size,
@@ -426,6 +463,7 @@ impl Extractor {
                     return Ok(Extractor {
                         inner: ExtractorInner::Done,
                         catalog: Vec::new(),
+                    catalog_enabled: true,
                         tracks: Vec::new(),
                         stats: ExtractionStats {
                             file_size,
@@ -449,6 +487,7 @@ impl Extractor {
                 Ok(Extractor {
                     inner: ExtractorInner::Sup(state),
                     catalog: Vec::new(),
+                    catalog_enabled: true,
                     tracks,
                     stats: ExtractionStats {
                         file_size,
@@ -571,7 +610,9 @@ impl Iterator for Extractor {
                         }
                     }
 
-                    self.catalog.push(tds.clone());
+                    if self.catalog_enabled {
+                        self.catalog.push(tds.clone());
+                    }
                     return Some(Ok(tds));
                 }
                 Some(Err(e)) => {
