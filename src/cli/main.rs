@@ -307,6 +307,7 @@ fn cmd_stream(args: &[String]) -> Result<(), libpgs::error::PgsError> {
     if start_ms.is_some() || end_ms.is_some() {
         extractor = extractor.with_time_range(start_ms, end_ms);
     }
+    extractor = extractor.with_history(false);
 
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
@@ -320,20 +321,41 @@ fn cmd_stream(args: &[String]) -> Result<(), libpgs::error::PgsError> {
     }
 }
 
+/// Drain an NDJSON line to `out` in ~4KB chunks, then flush.
+///
+/// Chunking matters on Windows: a single large pipe write can block the
+/// producer until the consumer drains the pipe, while many small writes
+/// stay inside the pipe buffer. ~4KB matches common line-buffered reader
+/// defaults (Python, Node, `wc`), keeping throughput high for piped
+/// consumers without giving up the per-line-buffer benefit of coalescing
+/// many small `write!` calls into one allocation.
+fn flush_line<W: Write>(out: &mut W, line: &[u8]) -> std::io::Result<()> {
+    const CHUNK: usize = 2048;
+    for chunk in line.chunks(CHUNK) {
+        out.write_all(chunk)?;
+    }
+    out.flush()
+}
+
 fn stream_ndjson(
     out: &mut impl Write,
     extractor: &mut libpgs::Extractor,
     raw_payloads: bool,
 ) -> std::io::Result<()> {
+    // Reused per-line scratch buffer: assemble the full NDJSON line here,
+    // then issue a single write_all + flush so pipe consumers see one
+    // atomic write per line (one syscall vs many).
+    let mut line: Vec<u8> = Vec::with_capacity(16 * 1024);
+
     // Emit tracks header as first line.
     let tracks = extractor.tracks();
-    write!(out, "{{\"type\":\"tracks\",\"tracks\":[")?;
+    write!(line, "{{\"type\":\"tracks\",\"tracks\":[")?;
     for (ti, track) in tracks.iter().enumerate() {
         if ti > 0 {
-            write!(out, ",")?;
+            write!(line, ",")?;
         }
         write!(
-            out,
+            line,
             "{{\"track_id\":{},\"language\":{},\"container\":\"{}\",\
              \"name\":{},\"is_default\":{},\"is_forced\":{},\"display_set_count\":{},\
              \"indexed\":{}}}",
@@ -347,8 +369,9 @@ fn stream_ndjson(
             json_bool_or_null(track.has_cues),
         )?;
     }
-    writeln!(out, "]}}")?;
-    out.flush()?;
+    writeln!(line, "]}}")?;
+    flush_line(out, &line)?;
+    line.clear();
 
     // Per-track index counter for display set sequence numbers.
     let mut track_indices: std::collections::HashMap<u32, u64> = std::collections::HashMap::new();
@@ -362,29 +385,30 @@ fn stream_ndjson(
         *index += 1;
 
         write!(
-            out,
+            line,
             "{{\"type\":\"display_set\",\"track_id\":{},\"index\":{},\
              \"pts\":{},\"pts_ms\":{:.4},",
             tds.track_id, current_index, ds.pts, ds.pts_ms,
         )?;
 
         // -- composition (from PCS) --
-        write_composition(out, &ds.segments, raw_payloads)?;
-        write!(out, ",")?;
+        write_composition(&mut line, &ds.segments, raw_payloads)?;
+        write!(line, ",")?;
 
         // -- windows (from WDS) --
-        write_windows(out, &ds.segments, raw_payloads)?;
-        write!(out, ",")?;
+        write_windows(&mut line, &ds.segments, raw_payloads)?;
+        write!(line, ",")?;
 
         // -- palettes (from PDS) --
-        write_palettes(out, &ds.segments, raw_payloads)?;
-        write!(out, ",")?;
+        write_palettes(&mut line, &ds.segments, raw_payloads)?;
+        write!(line, ",")?;
 
         // -- objects (from ODS) --
-        write_objects(out, &ds.segments, raw_payloads)?;
+        write_objects(&mut line, &ds.segments, raw_payloads)?;
 
-        writeln!(out, "}}")?;
-        out.flush()?;
+        writeln!(line, "}}")?;
+        flush_line(out, &line)?;
+        line.clear();
     }
 
     Ok(())
@@ -408,11 +432,8 @@ fn write_composition(
 
     let Some(pcs) = seg.parse_pcs() else {
         if raw_payloads {
-            write!(
-                out,
-                "\"composition\":{{\"payload\":\"{}\"}}",
-                base64_encode(&seg.payload)
-            )?;
+            write_base64_field(out, b"\"composition\":{\"payload\":\"", &seg.payload)?;
+            write!(out, "}}")?;
         } else {
             write!(out, "\"composition\":null")?;
         }
@@ -454,7 +475,7 @@ fn write_composition(
 
     write!(out, "]")?;
     if raw_payloads {
-        write!(out, ",\"payload\":\"{}\"", base64_encode(&seg.payload))?;
+        write_base64_field(out, b",\"payload\":\"", &seg.payload)?;
     }
     write!(out, "}}")?;
 
@@ -486,7 +507,7 @@ fn write_windows(
                     win.id, win.x, win.y, win.width, win.height,
                 )?;
                 if raw_payloads {
-                    write!(out, ",\"payload\":\"{}\"", base64_encode(&seg.payload))?;
+                    write_base64_field(out, b",\"payload\":\"", &seg.payload)?;
                 }
                 write!(out, "}}")?;
             }
@@ -532,7 +553,7 @@ fn write_palettes(
             }
             write!(out, "]")?;
             if raw_payloads {
-                write!(out, ",\"payload\":\"{}\"", base64_encode(&seg.payload))?;
+                write_base64_field(out, b",\"payload\":\"", &seg.payload)?;
             }
             write!(out, "}}")?;
         }
@@ -613,7 +634,7 @@ fn write_objects(
             }
             if rle_ok {
                 if let Some(pixels) = decode_rle(&rle_data, w, h) {
-                    write!(out, ",\"bitmap\":\"{}\"", base64_encode(&pixels))?;
+                    write_base64_field(out, b",\"bitmap\":\"", &pixels)?;
                 } else {
                     write!(out, ",\"bitmap\":null")?;
                 }
@@ -627,17 +648,13 @@ fn write_objects(
         if raw_payloads {
             // For reassembled objects, concatenate all raw payloads.
             if fragments.len() == 1 {
-                write!(
-                    out,
-                    ",\"payload\":\"{}\"",
-                    base64_encode(&fragments[0].0.payload)
-                )?;
+                write_base64_field(out, b",\"payload\":\"", &fragments[0].0.payload)?;
             } else {
                 let mut combined = Vec::new();
                 for (seg, _) in fragments {
                     combined.extend_from_slice(&seg.payload);
                 }
-                write!(out, ",\"payload\":\"{}\"", base64_encode(&combined))?;
+                write_base64_field(out, b",\"payload\":\"", &combined)?;
             }
         }
         write!(out, "}}")?;
@@ -696,29 +713,56 @@ fn composition_state_name(cs: libpgs::pgs::segment::CompositionState) -> &'stati
 
 const BASE64_CHARS: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-fn base64_encode(data: &[u8]) -> String {
-    let mut encoded = String::with_capacity(data.len().div_ceil(3) * 4);
-    for chunk in data.chunks(3) {
-        let b0 = chunk[0] as u32;
-        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
-        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
-        let triple = (b0 << 16) | (b1 << 8) | b2;
+/// Write `<prefix><base64(data)>"` to the writer. Used for fields like
+/// `,"bitmap":"` + base64 + closing `"`.
+fn write_base64_field<W: Write>(out: &mut W, prefix: &[u8], data: &[u8]) -> std::io::Result<()> {
+    out.write_all(prefix)?;
+    write_base64(out, data)?;
+    out.write_all(b"\"")?;
+    Ok(())
+}
 
-        encoded.push(BASE64_CHARS[((triple >> 18) & 0x3F) as usize] as char);
-        encoded.push(BASE64_CHARS[((triple >> 12) & 0x3F) as usize] as char);
-
-        if chunk.len() > 1 {
-            encoded.push(BASE64_CHARS[((triple >> 6) & 0x3F) as usize] as char);
-        } else {
-            encoded.push('=');
+/// Base64-encode `data` directly into the writer without an intermediate String.
+/// Byte-for-byte identical to `base64_encode`.
+fn write_base64<W: Write>(out: &mut W, data: &[u8]) -> std::io::Result<()> {
+    let mut buf = [0u8; 1024];
+    let mut chunks = data.chunks_exact(3);
+    let mut pos = 0;
+    for chunk in chunks.by_ref() {
+        if pos + 4 > buf.len() {
+            out.write_all(&buf[..pos])?;
+            pos = 0;
         }
-        if chunk.len() > 2 {
-            encoded.push(BASE64_CHARS[(triple & 0x3F) as usize] as char);
-        } else {
-            encoded.push('=');
-        }
+        let triple = ((chunk[0] as u32) << 16) | ((chunk[1] as u32) << 8) | (chunk[2] as u32);
+        buf[pos] = BASE64_CHARS[((triple >> 18) & 0x3F) as usize];
+        buf[pos + 1] = BASE64_CHARS[((triple >> 12) & 0x3F) as usize];
+        buf[pos + 2] = BASE64_CHARS[((triple >> 6) & 0x3F) as usize];
+        buf[pos + 3] = BASE64_CHARS[(triple & 0x3F) as usize];
+        pos += 4;
     }
-    encoded
+    let rem = chunks.remainder();
+    if !rem.is_empty() {
+        if pos + 4 > buf.len() {
+            out.write_all(&buf[..pos])?;
+            pos = 0;
+        }
+        let b0 = rem[0] as u32;
+        let b1 = if rem.len() > 1 { rem[1] as u32 } else { 0 };
+        let triple = (b0 << 16) | (b1 << 8);
+        buf[pos] = BASE64_CHARS[((triple >> 18) & 0x3F) as usize];
+        buf[pos + 1] = BASE64_CHARS[((triple >> 12) & 0x3F) as usize];
+        buf[pos + 2] = if rem.len() > 1 {
+            BASE64_CHARS[((triple >> 6) & 0x3F) as usize]
+        } else {
+            b'='
+        };
+        buf[pos + 3] = b'=';
+        pos += 4;
+    }
+    if pos > 0 {
+        out.write_all(&buf[..pos])?;
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
