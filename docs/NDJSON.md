@@ -15,6 +15,7 @@ libpgs stream <file> -t 3 -t 5                       # Multiple tracks
 libpgs stream <file> --raw-payloads                  # Include base64 raw segment bytes
 libpgs stream <file> --start 0:05:00                 # From 5 minutes to end of file
 libpgs stream <file> --start 0:05:00 --end 0:10:00   # 5-minute window only
+libpgs stream <file> --with-header                   # Prepend manifest header (.sup only)
 ```
 
 Timestamps accept `HH:MM:SS.ms`, `MM:SS.ms`, `SS.ms`, or plain seconds (e.g., `300`). When `--start` or `--end` is specified, libpgs seeks directly to the estimated byte offset — data before the start point is not read. If no display sets fall within the range, the stream outputs the tracks header followed by EOF (no error).
@@ -25,7 +26,7 @@ Output is flushed after every line. Closing the pipe (e.g., `head -n 10`) causes
 
 The output consists of up to three types of JSON lines:
 
-1. **`header`** — optional, emitted only for `.sup` inputs. When present, it is the very first line and carries total display-set counts so consumers can show a progress denominator immediately.
+1. **`header`** — optional, emitted only for `.sup` inputs when `--with-header` is passed. When present, it is the very first line and carries total display-set counts so consumers can show a progress denominator immediately.
 2. **`tracks`** — always emitted (first line for containers, second line for `.sup`).
 3. **`display_set`** — one per subtitle event, for the remainder of the stream.
 
@@ -33,9 +34,9 @@ Check the `"type"` field to distinguish them.
 
 ---
 
-## Manifest Header (`.sup` only)
+## Manifest Header (`.sup` only, opt-in)
 
-For `.sup` inputs, libpgs prepends a single header line with pre-scanned counts. Containers (MKV, M2TS) do not emit this line — counting there would require a full demux, and MKV already surfaces per-track `display_set_count` via the `tracks` line when Tags are present.
+When `--with-header` is passed on a `.sup` input, libpgs runs a pre-scan of the file and prepends a single header line with total display-set counts. The flag is opt-in because the pre-scan adds an upfront latency before the first `display_set` line is emitted; consumers that don't need a progress denominator should omit the flag. Containers (MKV, M2TS) ignore the flag — counting there would require a full demux, and MKV already surfaces per-track `display_set_count` via the `tracks` line when Tags are present.
 
 ```json
 {

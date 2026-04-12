@@ -246,13 +246,14 @@ fn parse_timestamp(s: &str) -> Option<f64> {
 
 fn cmd_stream(args: &[String]) -> Result<(), libpgs::error::PgsError> {
     if args.is_empty() {
-        eprintln!("Usage: libpgs stream <file> [-t <id>] [--start TIME] [--end TIME] [--raw-payloads]");
+        eprintln!("Usage: libpgs stream <file> [-t <id>] [--start TIME] [--end TIME] [--raw-payloads] [--with-header]");
         process::exit(1);
     }
 
     let input = PathBuf::from(&args[0]);
     let mut track_ids: Vec<u32> = Vec::new();
     let mut raw_payloads = false;
+    let mut with_header = false;
     let mut start_ms: Option<f64> = None;
     let mut end_ms: Option<f64> = None;
 
@@ -269,6 +270,9 @@ fn cmd_stream(args: &[String]) -> Result<(), libpgs::error::PgsError> {
             }
             "--raw-payloads" => {
                 raw_payloads = true;
+            }
+            "--with-header" => {
+                with_header = true;
             }
             "--start" => {
                 i += 1;
@@ -314,7 +318,7 @@ fn cmd_stream(args: &[String]) -> Result<(), libpgs::error::PgsError> {
 
     // Stream tracks header + display sets as NDJSON.
     // If the consumer closes the pipe (BrokenPipe), exit cleanly.
-    match stream_ndjson(&mut out, &mut extractor, &input, raw_payloads) {
+    match stream_ndjson(&mut out, &mut extractor, &input, raw_payloads, with_header) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
         Err(e) => Err(e.into()),
@@ -342,6 +346,7 @@ fn stream_ndjson(
     extractor: &mut libpgs::Extractor,
     input: &Path,
     raw_payloads: bool,
+    with_header: bool,
 ) -> std::io::Result<()> {
     // Reused per-line scratch buffer: assemble the full NDJSON line here,
     // then issue a single write_all + flush so pipe consumers see one
@@ -350,7 +355,7 @@ fn stream_ndjson(
 
     // For .sup inputs, pre-scan to emit a manifest header with total/content/clear
     // display-set counts so consumers can display a progress denominator immediately.
-    if extractor.format() == libpgs::ContainerFormat::Sup {
+    if with_header && extractor.format() == libpgs::ContainerFormat::Sup {
         let counts = libpgs::sup::stream::count_display_sets(input)
             .map_err(std::io::Error::other)?;
         writeln!(

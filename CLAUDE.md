@@ -135,7 +135,7 @@ src/
 ```
 libpgs tracks <file>                                                        # List PGS tracks
 libpgs extract <file> -o <out> [-t <id>] [--start T] [--end T]             # Extract to .sup
-libpgs stream <file> [-t <id>] [--raw-payloads] [--start T] [--end T]      # Stream NDJSON to stdout
+libpgs stream <file> [-t <id>] [--raw-payloads] [--start T] [--end T] [--with-header]  # Stream NDJSON to stdout
 libpgs encode -o <output.sup>                                               # Encode NDJSON stdin to .sup
 libpgs bench <file>                                                         # Benchmark I/O efficiency
 ```
