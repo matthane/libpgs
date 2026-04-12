@@ -23,18 +23,44 @@ Output is flushed after every line. Closing the pipe (e.g., `head -n 10`) causes
 
 ## Protocol
 
-The output consists of two types of JSON lines:
+The output consists of up to three types of JSON lines:
 
-1. **Line 1** is always a `tracks` object (track discovery)
-2. **All subsequent lines** are `display_set` objects (one per subtitle event)
+1. **`header`** — optional, emitted only for `.sup` inputs. When present, it is the very first line and carries total display-set counts so consumers can show a progress denominator immediately.
+2. **`tracks`** — always emitted (first line for containers, second line for `.sup`).
+3. **`display_set`** — one per subtitle event, for the remainder of the stream.
 
 Check the `"type"` field to distinguish them.
 
 ---
 
+## Manifest Header (`.sup` only)
+
+For `.sup` inputs, libpgs prepends a single header line with pre-scanned counts. Containers (MKV, M2TS) do not emit this line — counting there would require a full demux, and MKV already surfaces per-track `display_set_count` via the `tracks` line when Tags are present.
+
+```json
+{
+  "type": "header",
+  "total_display_sets": 1823,
+  "total_content_display_sets": 1456,
+  "total_clear_display_sets": 367
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `total_display_sets` | number | All display sets (count of END segments). |
+| `total_content_display_sets` | number | PCSes with at least one composition object — visible subtitle frames. |
+| `total_clear_display_sets` | number | PCSes with zero composition objects — "remove from screen" display sets. |
+
+`total_content_display_sets + total_clear_display_sets == total_display_sets`.
+
+The pre-scan reads only 13-byte segment headers (and tiny PCS payloads) while seeking over other payloads — ~1–2% of file bytes, completing in well under a second on multi-GB files.
+
+---
+
 ## Track Discovery
 
-The first line describes all PGS tracks found in the container.
+The first line (or the second, after the header on `.sup` inputs) describes all PGS tracks found in the container.
 
 ```json
 {

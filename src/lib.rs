@@ -503,6 +503,11 @@ impl Extractor {
         }
     }
 
+    /// Container format detected at open time.
+    pub fn format(&self) -> ContainerFormat {
+        self.format
+    }
+
     /// PGS tracks discovered in the file.
     pub fn tracks(&self) -> &[PgsTrackInfo] {
         &self.tracks

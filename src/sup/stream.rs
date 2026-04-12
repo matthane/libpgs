@@ -4,6 +4,8 @@ use crate::pgs::DisplaySetAssembler;
 use crate::pgs::segment::{HEADER_SIZE, PGS_MAGIC, PgsSegment, SegmentType};
 use crate::{ContainerFormat, TrackDisplaySet};
 use std::fs::File;
+use std::io::{BufReader, Read, Seek, SeekFrom};
+use std::path::Path;
 
 /// How far back from EOF to scan for the last PGS segment header.
 const SUP_TAIL_SCAN: u64 = 64 * 1024;
@@ -193,6 +195,103 @@ impl SupExtractorState {
     }
 }
 
+/// Counts of display sets in a `.sup` file, produced by a fast pre-scan that
+/// reads only segment headers (and PCS payloads) while seeking over other
+/// payloads. `content + clear == total`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SupDisplaySetCounts {
+    /// Total display sets (count of END segments).
+    pub total: u64,
+    /// Display sets whose PCS has at least one composition object (a visible subtitle frame).
+    pub content: u64,
+    /// Display sets whose PCS has zero composition objects (a "clear screen" display set).
+    pub clear: u64,
+}
+
+/// Fast pre-scan of a `.sup` file that returns `(total, content, clear)` display
+/// set counts by walking segment headers only — no RLE decoding, no assembler.
+///
+/// Touches ~1–2% of file bytes: reads the 13-byte header of every segment plus
+/// the payload of every PCS (tiny, usually <64 bytes), and seeks over all other
+/// payloads. Completes in well under a second on multi-GB files.
+pub fn count_display_sets(path: &Path) -> Result<SupDisplaySetCounts, PgsError> {
+    let file = File::open(path)?;
+    let mut reader = BufReader::with_capacity(256 * 1024, file);
+
+    let mut counts = SupDisplaySetCounts::default();
+    let mut header = [0u8; HEADER_SIZE];
+
+    loop {
+        match read_exact_or_eof(&mut reader, &mut header)? {
+            false => return Ok(counts),
+            true => {}
+        }
+
+        if header[0] != PGS_MAGIC[0] || header[1] != PGS_MAGIC[1] {
+            return Err(PgsError::InvalidPgs(format!(
+                "expected PG magic (0x{:02X}{:02X}), got 0x{:02X}{:02X}",
+                PGS_MAGIC[0], PGS_MAGIC[1], header[0], header[1],
+            )));
+        }
+
+        let segment_type = SegmentType::from_byte(header[10]).ok_or_else(|| {
+            PgsError::InvalidPgs(format!("unknown segment type 0x{:02X}", header[10]))
+        })?;
+        let payload_size = u16::from_be_bytes([header[11], header[12]]) as usize;
+
+        match segment_type {
+            SegmentType::PresentationComposition => {
+                // PCS payloads are tiny; read to inspect num_composition_objects at byte 10.
+                if payload_size < 11 {
+                    return Err(PgsError::InvalidPgs(format!(
+                        "PCS payload too small: {payload_size} bytes"
+                    )));
+                }
+                let mut buf = vec![0u8; payload_size];
+                reader.read_exact(&mut buf)?;
+                let num_objects = buf[10];
+                if num_objects == 0 {
+                    counts.clear += 1;
+                } else {
+                    counts.content += 1;
+                }
+            }
+            SegmentType::EndOfDisplaySet => {
+                counts.total += 1;
+                // END payloads are zero-length in practice, but honor payload_size.
+                if payload_size > 0 {
+                    reader.seek(SeekFrom::Current(payload_size as i64))?;
+                }
+            }
+            _ => {
+                if payload_size > 0 {
+                    reader.seek(SeekFrom::Current(payload_size as i64))?;
+                }
+            }
+        }
+    }
+}
+
+/// Read exactly `buf.len()` bytes; return `Ok(false)` on clean EOF at the start.
+fn read_exact_or_eof<R: Read>(reader: &mut R, buf: &mut [u8]) -> std::io::Result<bool> {
+    let mut filled = 0;
+    while filled < buf.len() {
+        match reader.read(&mut buf[filled..])? {
+            0 => {
+                if filled == 0 {
+                    return Ok(false);
+                }
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "truncated PGS segment header",
+                ));
+            }
+            n => filled += n,
+        }
+    }
+    Ok(true)
+}
+
 /// Find the last PTS value in a block of SUP data by scanning for PG magic headers.
 fn find_last_sup_pts(data: &[u8]) -> Option<u64> {
     let mut last_pts = None;
@@ -310,6 +409,64 @@ mod tests {
         assert_eq!(ds2.display_set.pts, 180000);
 
         assert!(state.next_display_set().is_none());
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn count_display_sets_content_and_clear() {
+        // Content DS: PCS with 1 composition object, then END.
+        let content_pcs = PgsSegment {
+            pts: 90000,
+            dts: 0,
+            segment_type: SegmentType::PresentationComposition,
+            payload: vec![
+                0x07, 0x80, 0x04, 0x38, 0x10, 0x00, 0x01, 0x80, 0x00, 0x00,
+                0x01, // num_composition_objects: 1
+                // One composition object (8 bytes, no crop):
+                0x00, 0x00, // object_id
+                0x00, // window_id
+                0x00, // flags (no crop)
+                0x00, 0x10, // x
+                0x00, 0x20, // y
+            ],
+        };
+        let content_end = PgsSegment {
+            pts: 90000,
+            dts: 0,
+            segment_type: SegmentType::EndOfDisplaySet,
+            payload: Vec::new(),
+        };
+        // Clear DS: PCS with 0 composition objects, then END.
+        let clear_pcs = PgsSegment {
+            pts: 180000,
+            dts: 0,
+            segment_type: SegmentType::PresentationComposition,
+            payload: vec![
+                0x07, 0x80, 0x04, 0x38, 0x10, 0x00, 0x02, 0x00, 0x00, 0x00,
+                0x00, // num_composition_objects: 0
+            ],
+        };
+        let clear_end = PgsSegment {
+            pts: 180000,
+            dts: 0,
+            segment_type: SegmentType::EndOfDisplaySet,
+            payload: Vec::new(),
+        };
+
+        let mut data = content_pcs.to_bytes();
+        data.extend_from_slice(&content_end.to_bytes());
+        data.extend_from_slice(&clear_pcs.to_bytes());
+        data.extend_from_slice(&clear_end.to_bytes());
+
+        let path = temp_path("counts.sup");
+        std::fs::write(&path, &data).expect("write");
+
+        let counts = count_display_sets(&path).expect("count");
+        assert_eq!(counts.total, 2);
+        assert_eq!(counts.content, 1);
+        assert_eq!(counts.clear, 1);
+        assert_eq!(counts.total, counts.content + counts.clear);
 
         let _ = std::fs::remove_file(&path);
     }

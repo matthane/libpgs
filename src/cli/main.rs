@@ -1,5 +1,5 @@
 use std::io::{BufRead, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process;
 use std::time::Instant;
 
@@ -314,7 +314,7 @@ fn cmd_stream(args: &[String]) -> Result<(), libpgs::error::PgsError> {
 
     // Stream tracks header + display sets as NDJSON.
     // If the consumer closes the pipe (BrokenPipe), exit cleanly.
-    match stream_ndjson(&mut out, &mut extractor, raw_payloads) {
+    match stream_ndjson(&mut out, &mut extractor, &input, raw_payloads) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
         Err(e) => Err(e.into()),
@@ -340,12 +340,27 @@ fn flush_line<W: Write>(out: &mut W, line: &[u8]) -> std::io::Result<()> {
 fn stream_ndjson(
     out: &mut impl Write,
     extractor: &mut libpgs::Extractor,
+    input: &Path,
     raw_payloads: bool,
 ) -> std::io::Result<()> {
     // Reused per-line scratch buffer: assemble the full NDJSON line here,
     // then issue a single write_all + flush so pipe consumers see one
     // atomic write per line (one syscall vs many).
     let mut line: Vec<u8> = Vec::with_capacity(16 * 1024);
+
+    // For .sup inputs, pre-scan to emit a manifest header with total/content/clear
+    // display-set counts so consumers can display a progress denominator immediately.
+    if extractor.format() == libpgs::ContainerFormat::Sup {
+        let counts = libpgs::sup::stream::count_display_sets(input)
+            .map_err(std::io::Error::other)?;
+        writeln!(
+            line,
+            "{{\"type\":\"header\",\"total_display_sets\":{},\"total_content_display_sets\":{},\"total_clear_display_sets\":{}}}",
+            counts.total, counts.content, counts.clear,
+        )?;
+        flush_line(out, &line)?;
+        line.clear();
+    }
 
     // Emit tracks header as first line.
     let tracks = extractor.tracks();
