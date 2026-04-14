@@ -2,8 +2,6 @@
 
 A Rust library and CLI for extracting, encoding, and transforming PGS (Presentation Graphic Stream) subtitles from MKV and M2TS/TS containers.
 
-> **Note:** This project is under active development.
-
 ### Cue-based extraction
 
 Most tools (ffmpeg, mkvextract) extract subtitle tracks by reading through the entire MKV file linearly — parsing every cluster and discarding the video/audio blocks they don't need. For a 40 GB Blu-ray remux where the PGS subtitle data is only a few megabytes, this means reading tens of gigabytes just to find the subtitle blocks.
