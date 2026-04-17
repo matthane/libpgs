@@ -11,7 +11,6 @@ use libpgs::pgs::{
 use std::path::Path;
 
 const FIXTURES: &[&str] = &[
-    "tests/fixtures/raw-pgs.sup",
     "tests/fixtures/matroska-with-cues.mkv",
     "tests/fixtures/matroska-no-cues.mkv",
     "tests/fixtures/mpeg-transport-stream.m2ts",

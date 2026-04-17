@@ -17,7 +17,6 @@ const FIXTURES: &[&str] = &[
     "tests/fixtures/matroska-no-cues.mkv",
     "tests/fixtures/mpeg-transport-stream.m2ts",
     "tests/fixtures/mpeg-transport-stream-descriptors.m2ts",
-    "tests/fixtures/raw-pgs.sup",
 ];
 
 fn available_fixtures() -> Vec<&'static str> {

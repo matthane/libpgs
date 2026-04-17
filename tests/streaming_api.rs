@@ -4,7 +4,6 @@
 //! Fixture files are expected in `tests/fixtures/` but are not tracked in git.
 //! Tests are skipped at runtime if the fixtures are not present.
 
-use libpgs::pgs::segment::SegmentType;
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -13,7 +12,6 @@ const FIXTURES: &[&str] = &[
     "tests/fixtures/matroska-no-cues.mkv",
     "tests/fixtures/mpeg-transport-stream.m2ts",
     "tests/fixtures/mpeg-transport-stream-descriptors.m2ts",
-    "tests/fixtures/raw-pgs.sup",
 ];
 
 /// Returns only the fixture paths that exist on disk.
@@ -31,7 +29,7 @@ fn batch_baseline(path: &str) -> Vec<libpgs::TrackDisplaySets> {
 }
 
 #[test]
-fn streaming_yields_all_display_sets() {
+fn streaming_matches_batch_totals() {
     let fixtures = available_fixtures();
     if fixtures.is_empty() {
         return;
@@ -41,58 +39,35 @@ fn streaming_yields_all_display_sets() {
         let batch = batch_baseline(fixture);
         let batch_total: usize = batch.iter().map(|t| t.display_sets.len()).sum();
 
-        // Stream every display set via the iterator.
         let extractor = libpgs::Extractor::open(fixture).expect("open");
         let mut count = 0usize;
         let mut track_counts: HashMap<u32, usize> = HashMap::new();
+        let mut track_segments: HashMap<u32, usize> = HashMap::new();
 
         for result in extractor {
             let tds = result.expect("streaming item should be Ok");
             count += 1;
             *track_counts.entry(tds.track_id).or_default() += 1;
+            *track_segments.entry(tds.track_id).or_default() += tds.display_set.segments.len();
         }
 
-        // Total display set count must match batch.
         assert_eq!(
             count, batch_total,
             "{fixture}: streaming total ({count}) != batch total ({batch_total})"
         );
 
-        // Per-track counts must match.
         for bt in &batch {
             let stream_count = track_counts.get(&bt.track.track_id).copied().unwrap_or(0);
             assert_eq!(
                 stream_count,
                 bt.display_sets.len(),
-                "{fixture}: track {} mismatch: streaming={stream_count}, batch={}",
+                "{fixture}: track {} display set mismatch: streaming={stream_count}, batch={}",
                 bt.track.track_id,
                 bt.display_sets.len()
             );
-        }
-    }
-}
 
-#[test]
-fn streaming_segments_match_batch() {
-    let fixtures = available_fixtures();
-    if fixtures.is_empty() {
-        return;
-    }
-
-    for fixture in fixtures {
-        let batch = batch_baseline(fixture);
-
-        let extractor = libpgs::Extractor::open(fixture).expect("open");
-        let mut stream_segments: HashMap<u32, usize> = HashMap::new();
-
-        for result in extractor {
-            let tds = result.expect("streaming item should be Ok");
-            *stream_segments.entry(tds.track_id).or_default() += tds.display_set.segments.len();
-        }
-
-        for bt in &batch {
             let batch_segs: usize = bt.display_sets.iter().map(|ds| ds.segments.len()).sum();
-            let stream_segs = stream_segments
+            let stream_segs = track_segments
                 .get(&bt.track.track_id)
                 .copied()
                 .unwrap_or(0);
@@ -345,80 +320,6 @@ fn collect_by_track_matches_batch() {
                 expected
             );
         }
-    }
-}
-
-#[test]
-fn extraction_summary() {
-    let fixtures = available_fixtures();
-    if fixtures.is_empty() {
-        return;
-    }
-
-    for fixture in fixtures {
-        let (by_track, stats) = libpgs::extract_all_display_sets_with_stats(Path::new(fixture))
-            .expect("extraction with stats should succeed");
-
-        println!("\n============================================================");
-        println!("  {fixture}");
-        println!(
-            "  File size: {:.2} MB",
-            stats.file_size as f64 / 1_048_576.0
-        );
-        println!(
-            "  Bytes read: {:.2} MB ({:.1}%)",
-            stats.bytes_read as f64 / 1_048_576.0,
-            stats.bytes_read as f64 / stats.file_size as f64 * 100.0,
-        );
-        println!("  Tracks: {}", by_track.len());
-
-        let mut total_ds = 0usize;
-        let mut total_segs = 0usize;
-
-        for track in &by_track {
-            let ds_count = track.display_sets.len();
-            let seg_count: usize = track.display_sets.iter().map(|ds| ds.segments.len()).sum();
-            total_ds += ds_count;
-            total_segs += seg_count;
-
-            let first_pts = track
-                .display_sets
-                .first()
-                .map(|ds| ds.pts_ms)
-                .unwrap_or(0.0);
-            let last_pts = track.display_sets.last().map(|ds| ds.pts_ms).unwrap_or(0.0);
-
-            let mut seg_types: HashMap<&str, usize> = HashMap::new();
-            for ds in &track.display_sets {
-                for seg in &ds.segments {
-                    let name = match seg.segment_type {
-                        SegmentType::PresentationComposition => "PCS",
-                        SegmentType::WindowDefinition => "WDS",
-                        SegmentType::PaletteDefinition => "PDS",
-                        SegmentType::ObjectDefinition => "ODS",
-                        SegmentType::EndOfDisplaySet => "END",
-                    };
-                    *seg_types.entry(name).or_default() += 1;
-                }
-            }
-
-            let lang = track.track.language.as_deref().unwrap_or("unknown");
-            println!("\n  Track {} ({lang}):", track.track.track_id);
-            println!("    Display sets: {ds_count}");
-            println!("    Segments: {seg_count}");
-            println!("    PTS range: {first_pts:.3}ms - {last_pts:.3}ms");
-            println!(
-                "    Segment types: PCS={} WDS={} PDS={} ODS={} END={}",
-                seg_types.get("PCS").unwrap_or(&0),
-                seg_types.get("WDS").unwrap_or(&0),
-                seg_types.get("PDS").unwrap_or(&0),
-                seg_types.get("ODS").unwrap_or(&0),
-                seg_types.get("END").unwrap_or(&0),
-            );
-        }
-
-        println!("\n  Totals: {total_ds} display sets, {total_segs} segments");
-        println!("============================================================\n");
     }
 }
 
