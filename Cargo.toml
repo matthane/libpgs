@@ -2,8 +2,14 @@
 name = "libpgs"
 version = "0.6.0"
 edition = "2024"
-description = "Fast PGS subtitle extraction from MKV and M2TS containers"
+description = "Fast PGS subtitle extraction, encoding, and round-trip transformation for MKV and M2TS containers"
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/matthane/libpgs"
+homepage = "https://github.com/matthane/libpgs"
+documentation = "https://docs.rs/libpgs"
+readme = "README.md"
+keywords = ["pgs", "subtitles", "mkv", "m2ts", "bluray"]
+categories = ["multimedia::video", "multimedia::encoding", "parser-implementations", "command-line-utilities"]
 
 [lib]
 name = "libpgs"
