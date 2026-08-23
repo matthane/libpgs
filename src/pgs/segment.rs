@@ -47,9 +47,9 @@ impl SegmentType {
 pub enum CompositionState {
     /// Normal update (0x00)
     Normal,
-    /// Acquisition point — display refresh (0x40)
+    /// Acquisition point, display refresh (0x40)
     AcquisitionPoint,
-    /// Epoch start — new display (0x80)
+    /// Epoch start, new display (0x80)
     EpochStart,
 }
 
@@ -169,7 +169,7 @@ impl PgsSegment {
         segments
     }
 
-    /// Get the PTS as milliseconds.
+    /// PTS is a 90 kHz clock, so this divides by 90.0 to get milliseconds.
     pub fn pts_ms(&self) -> f64 {
         self.pts as f64 / 90.0
     }
@@ -239,8 +239,6 @@ impl PgsSegment {
         super::payload::OdsData::parse(&self.payload)
     }
 
-    // -- Factory methods --
-
     /// Create a PCS segment from structured payload data.
     pub fn from_pcs(pts: u64, dts: u64, pcs: &super::payload::PcsData) -> Self {
         PgsSegment {
@@ -291,27 +289,25 @@ impl PgsSegment {
         }
     }
 
-    // -- Payload update methods --
-
-    /// Replace this segment's payload with the serialized PCS data.
+    /// Replace the payload with serialized PCS data.
     pub fn set_pcs_payload(&mut self, pcs: &super::payload::PcsData) {
         debug_assert_eq!(self.segment_type, SegmentType::PresentationComposition);
         self.payload = pcs.to_bytes();
     }
 
-    /// Replace this segment's payload with the serialized WDS data.
+    /// Replace the payload with serialized WDS data.
     pub fn set_wds_payload(&mut self, wds: &super::payload::WdsData) {
         debug_assert_eq!(self.segment_type, SegmentType::WindowDefinition);
         self.payload = wds.to_bytes();
     }
 
-    /// Replace this segment's payload with the serialized PDS data.
+    /// Replace the payload with serialized PDS data.
     pub fn set_pds_payload(&mut self, pds: &super::payload::PdsData) {
         debug_assert_eq!(self.segment_type, SegmentType::PaletteDefinition);
         self.payload = pds.to_bytes();
     }
 
-    /// Replace this segment's payload with the serialized ODS data.
+    /// Replace the payload with serialized ODS data.
     pub fn set_ods_payload(&mut self, ods: &super::payload::OdsData) {
         debug_assert_eq!(self.segment_type, SegmentType::ObjectDefinition);
         self.payload = ods.to_bytes();

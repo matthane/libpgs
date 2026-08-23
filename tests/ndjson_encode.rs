@@ -24,7 +24,6 @@ fn available_fixtures() -> Vec<&'static str> {
         .collect()
 }
 
-/// Run `libpgs stream` and return stdout bytes.
 fn stream_fixture(fixture: &str) -> Vec<u8> {
     let binary = env!("CARGO_BIN_EXE_libpgs");
     let output = Command::new(binary)
@@ -42,7 +41,6 @@ fn stream_fixture(fixture: &str) -> Vec<u8> {
     output.stdout
 }
 
-/// Run `libpgs encode -o <path>` with given stdin bytes.
 fn encode_to_file(ndjson: &[u8], output_path: &Path) {
     let binary = env!("CARGO_BIN_EXE_libpgs");
     let child = Command::new(binary)
@@ -74,7 +72,6 @@ fn stream_encode_roundtrip_preserves_structure() {
     }
 
     for fixture in fixtures {
-        // Step 1: Extract display sets from original file via API.
         let original_tracks =
             libpgs::Extractor::open(Path::new(fixture))
                 .unwrap()
@@ -86,25 +83,20 @@ fn stream_encode_roundtrip_preserves_structure() {
             continue;
         }
 
-        // Step 2: Stream to NDJSON.
         let ndjson = stream_fixture(fixture);
 
-        // Step 3: Encode NDJSON to .sup file.
         let tmp_dir = std::env::temp_dir();
         let fixture_stem = Path::new(fixture)
             .file_stem()
             .unwrap()
             .to_string_lossy();
 
-        // If multi-track, encode produces separate files.
-        // Use a single output path — encode will split if needed.
+        // Use a single output path; encode will split if needed.
         let sup_path = tmp_dir.join(format!("libpgs_test_{fixture_stem}.sup"));
         encode_to_file(&ndjson, &sup_path);
 
-        // Step 4: Re-read the .sup file(s) and compare.
         // For multi-track sources, encode creates <stem>_track<id>.sup files.
         if original_tracks.len() == 1 {
-            // Single track: output is at sup_path directly.
             assert!(
                 sup_path.exists(),
                 "{fixture}: encoded .sup file not found at {}",
@@ -122,7 +114,6 @@ fn stream_encode_roundtrip_preserves_structure() {
                 "{fixture}: display set count mismatch"
             );
 
-            // Compare each display set.
             for (i, (re, orig)) in re_extracted.iter().zip(orig_ds.iter()).enumerate() {
                 assert_eq!(
                     re.display_set.pts, orig.pts,
@@ -133,7 +124,6 @@ fn stream_encode_roundtrip_preserves_structure() {
                     "{fixture} ds[{i}]: composition state mismatch"
                 );
 
-                // Compare palettes.
                 let re_pds: Vec<_> = re.display_set.segments.iter().filter_map(|s| s.parse_pds()).collect();
                 let orig_pds: Vec<_> = orig.segments.iter().filter_map(|s| s.parse_pds()).collect();
                 assert_eq!(
@@ -163,12 +153,10 @@ fn stream_encode_roundtrip_preserves_structure() {
                     }
                 }
 
-                // Compare object bitmaps (decode RLE from both and compare pixels).
                 let re_ods: Vec<_> = re.display_set.segments.iter().filter_map(|s| s.parse_ods()).collect();
                 let orig_ods: Vec<_> = orig.segments.iter().filter_map(|s| s.parse_ods()).collect();
 
                 // Original may have fragmented ODS; re-encoded will have fresh fragmentation.
-                // Compare by grouping by object ID and decoding the complete bitmaps.
                 let re_bitmaps = collect_bitmaps(&re_ods);
                 let orig_bitmaps = collect_bitmaps(&orig_ods);
 
@@ -195,10 +183,8 @@ fn stream_encode_roundtrip_preserves_structure() {
                 }
             }
 
-            // Clean up.
             let _ = std::fs::remove_file(&sup_path);
         } else {
-            // Multi-track: verify each track's file exists and has correct count.
             let stem = sup_path.file_stem().unwrap().to_string_lossy().to_string();
             let ext = sup_path
                 .extension()
@@ -226,7 +212,7 @@ fn stream_encode_roundtrip_preserves_structure() {
                     orig_track.track.track_id
                 );
 
-                // Sort both by PTS for comparison — collect_by_track() may use
+                // Sort both by PTS for comparison; collect_by_track() may use
                 // parallel extraction which can reorder display sets relative to
                 // the sequential stream command.
                 let mut re_pts: Vec<u64> = re_extracted.iter().map(|r| r.display_set.pts).collect();
@@ -289,7 +275,6 @@ fn encode_empty_input_produces_no_output() {
         .spawn()
         .expect("failed to start libpgs encode");
 
-    // Close stdin immediately (empty input).
     let mut child = child;
     drop(child.stdin.take());
     let output = child.wait_with_output().expect("failed to wait on encode");

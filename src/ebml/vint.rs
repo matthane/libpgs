@@ -51,7 +51,6 @@ pub fn read_element_size<R: Read>(reader: &mut R) -> Result<Vint, PgsError> {
         return Err(PgsError::InvalidVint);
     }
 
-    // Strip the leading marker bit.
     // For width=8, the entire first byte is the marker, so mask=0.
     let mask = if width < 8 { 0xFFu8 >> width } else { 0u8 };
     let mut value = (first & mask) as u64;
@@ -75,7 +74,6 @@ pub fn read_element_size<R: Read>(reader: &mut R) -> Result<Vint, PgsError> {
 /// Same encoding as element sizes: marker bit stripped.
 #[inline]
 pub fn read_track_number<R: Read>(reader: &mut R) -> Result<Vint, PgsError> {
-    // Track numbers use the same encoding as element sizes (marker stripped).
     read_element_size(reader)
 }
 
@@ -108,11 +106,7 @@ mod tests {
 
     #[test]
     fn test_element_id_2_byte() {
-        // Cluster element ID: 0x1F43B675 — actually 4 bytes
-        // TrackNumber element ID: 0xD7 — 1 byte
-        // Let's test a 2-byte ID: CodecID = 0x86 is 1 byte.
-        // TrackType = 0x83 is 1 byte.
-        // SeekID = 0x53AB is 2 bytes.
+        // SeekID element ID: 0x53AB is 2 bytes.
         let mut r = Cursor::new([0x53, 0xAB]);
         let v = read_element_id(&mut r).unwrap();
         assert_eq!(v.value, 0x53AB);

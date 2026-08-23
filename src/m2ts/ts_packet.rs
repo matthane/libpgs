@@ -85,12 +85,10 @@ pub fn detect_packet_format<R: Read + Seek>(
     reader.seek_to(0)?;
     let buf = reader.read_bytes(M2TS_PACKET_SIZE * (SYNC_CHECK_COUNT + 1))?;
 
-    // Check M2TS first (0x47 at offset 4, then every 192 bytes).
     if check_sync_pattern(&buf, 4, M2TS_PACKET_SIZE, SYNC_CHECK_COUNT) {
         return Ok(PacketFormat::M2ts);
     }
 
-    // Check raw TS (0x47 at offset 0, then every 188 bytes).
     if check_sync_pattern(&buf, 0, TS_PACKET_SIZE, SYNC_CHECK_COUNT) {
         return Ok(PacketFormat::RawTs);
     }
@@ -182,7 +180,6 @@ pub fn resync<R: Read + Seek>(
             Err(_) => break,
         };
 
-        // Look for two consecutive sync bytes at the correct stride.
         let search_end = buf.len().saturating_sub(sync_offset + packet_size);
         for i in 0..search_end {
             let first = i + sync_offset;

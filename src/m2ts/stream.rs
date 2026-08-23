@@ -16,7 +16,7 @@ use std::fs::File;
 const SEEK_MARGIN: u64 = 2 * 1024 * 1024;
 
 /// Probe block size for iterative seek refinement (512 KB).
-/// At 192 bytes/packet, this is ~2700 packets — enough to reliably find
+/// At 192 bytes/packet, this is ~2700 packets, enough to reliably find
 /// a PES header with PTS even in regions with large video frames.
 const PROBE_SIZE: usize = 512 * 1024;
 
@@ -104,8 +104,8 @@ impl M2tsExtractorState {
     /// Apply a time range for seeking and early termination.
     ///
     /// If `start_ms` is set and duration info is available, seeks the reader
-    /// to an estimated byte offset. Uses binary search refinement: probes the
-    /// actual PTS at the estimated position and narrows the search range,
+    /// to an estimated byte offset, using binary search refinement that probes
+    /// the actual PTS at the estimated position and narrows the search range,
     /// compensating for variable bitrate in transport streams.
     pub(crate) fn set_time_range(&mut self, start_ms: Option<f64>, _end_ms: Option<f64>) {
         if let Some(start) = start_ms {
@@ -113,15 +113,12 @@ impl M2tsExtractorState {
                 let duration_ticks = pts_end.saturating_sub(self.pts_offset);
                 if duration_ticks > 0 {
                     let target_ticks = (start * 90.0) as u64;
-                    // Absolute PTS target (before offset subtraction).
                     let target_abs = target_ticks + self.pts_offset;
                     let packet_size = self.format.packet_size() as u64;
 
-                    // Initial estimate via linear interpolation.
                     let ratio = target_ticks as f64 / duration_ticks as f64;
                     let estimated = (self.file_size as f64 * ratio) as u64;
 
-                    // Binary search: narrow [lo, hi] around the target PTS.
                     let mut lo: u64 = 0;
                     let mut hi: u64 = estimated;
                     let mut best = 0u64; // best known position at or before target
@@ -137,16 +134,16 @@ impl M2tsExtractorState {
                         }
                         match self.probe_pts() {
                             Some(pts) if pts > target_abs => {
-                                // Overshot — target is in [lo, mid).
+                                // Overshot, target is in [lo, mid).
                                 hi = mid;
                             }
                             Some(_) => {
-                                // At or before target — target is in [mid, hi].
+                                // At or before target, target is in [mid, hi].
                                 best = mid;
                                 lo = mid;
                             }
                             None => {
-                                // Can't determine PTS — shrink range and retry.
+                                // Can't determine PTS, shrink range and retry.
                                 hi = mid;
                             }
                         }
@@ -164,7 +161,7 @@ impl M2tsExtractorState {
 
     /// Read a small block at the current position and return the first PTS found.
     ///
-    /// Used for iterative seek refinement — probes the actual timestamp at
+    /// Used for iterative seek refinement, probes the actual timestamp at
     /// a byte position to verify the linear estimate.
     fn probe_pts(&mut self) -> Option<u64> {
         let packet_size = self.format.packet_size();
@@ -197,28 +194,23 @@ impl M2tsExtractorState {
     /// Advance the state machine to produce the next display set.
     pub(crate) fn next_display_set(&mut self) -> Option<Result<TrackDisplaySet, PgsError>> {
         loop {
-            // Drain pending display sets first.
             if let Some(tds) = self.pending.pop_front() {
                 return Some(Ok(tds));
             }
 
-            // If we've finished scanning and flushing, we're done.
             if self.flushed {
                 return None;
             }
 
-            // If we've reached end of scan, flush PES reassemblers.
             if self.reader.position() >= self.scan_end {
                 self.flush_all();
                 self.flushed = true;
-                // Check if flush produced any display sets.
                 if !self.pending.is_empty() {
                     continue;
                 }
                 return None;
             }
 
-            // Process the next 2 MB block of packets.
             match self.scan_next_block() {
                 Ok(()) => continue,
                 Err(e) => {
@@ -243,7 +235,7 @@ impl M2tsExtractorState {
         let read_size = remaining.min(SCAN_BLOCK_SIZE);
 
         if read_size < packet_size {
-            // Not enough data for a single packet — we're done scanning.
+            // Not enough data for a single packet, we're done scanning.
             self.reader.seek_to(end)?;
             return Ok(());
         }
@@ -251,7 +243,6 @@ impl M2tsExtractorState {
         let block_start = self.reader.position();
         let block = self.reader.read_bytes(read_size)?;
 
-        // Find packet alignment.
         let mut offset = 0;
         if offset + sync_offset < block.len() && block[offset + sync_offset] != ts_packet::SYNC_BYTE
         {
@@ -267,7 +258,6 @@ impl M2tsExtractorState {
             }
         }
 
-        // Bulk scan packets.
         while offset + packet_size <= block.len() {
             let ts_pos = offset + sync_offset;
 
@@ -289,7 +279,6 @@ impl M2tsExtractorState {
                 }
             }
 
-            // Quick PID check.
             let pid = ((block[ts_pos + 1] as u16 & 0x1F) << 8) | block[ts_pos + 2] as u16;
 
             if let Some((pes_asm, ds_asm)) = self.pid_state.get_mut(&pid) {
@@ -355,7 +344,6 @@ impl M2tsExtractorState {
         }
     }
 
-    /// Get current bytes read from the underlying reader.
     pub(crate) fn bytes_read(&self) -> u64 {
         self.reader.bytes_read()
     }

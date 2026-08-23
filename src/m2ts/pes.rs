@@ -70,7 +70,6 @@ fn parse_pes_for_pgs(data: &[u8]) -> Vec<PgsSegment> {
         return Vec::new();
     }
 
-    // Verify PES start code: 0x00 0x00 0x01
     if data[0] != 0x00 || data[1] != 0x00 || data[2] != 0x01 {
         return Vec::new();
     }
@@ -89,14 +88,12 @@ fn parse_pes_for_pgs(data: &[u8]) -> Vec<PgsSegment> {
         return Vec::new();
     }
 
-    // Parse PTS (33-bit MPEG timestamp).
     let pts = if pts_dts_flags >= 2 && header_data_length >= 5 {
         parse_timestamp(&data[9..14])
     } else {
         0
     };
 
-    // Parse DTS if both PTS and DTS present.
     let dts = if pts_dts_flags == 3 && header_data_length >= 10 {
         parse_timestamp(&data[14..19])
     } else {
@@ -105,7 +102,7 @@ fn parse_pes_for_pgs(data: &[u8]) -> Vec<PgsSegment> {
 
     // PGS segment data starts after the PES header.
     // In M2TS, the PES payload contains: segment_type(1) + segment_length(2) + data
-    // (no "PG" magic — that's a .sup file wrapper).
+    // (no "PG" magic, that's a .sup file wrapper).
     PgsSegment::parse_raw_segments(pts, dts, &data[pes_header_end..])
 }
 
@@ -221,7 +218,7 @@ mod tests {
         let r1 = asm.push(true, &pes1);
         assert!(r1.is_empty());
 
-        // Second PES packet starts — first is emitted.
+        // Second PES packet starts, first is emitted.
         let r2 = asm.push(true, &pes2);
         assert_eq!(r2.len(), 1);
         assert_eq!(r2[0].pts, 90000);

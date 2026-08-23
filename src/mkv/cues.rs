@@ -69,7 +69,7 @@ fn parse_cue_point<R: Read + Seek>(
     let end = data_start + data_size;
 
     let mut cue_time: u64 = 0;
-    // Collect all matching CueTrackPositions entries — a single CuePoint
+    // Collect all matching CueTrackPositions entries: a single CuePoint
     // can reference multiple tracks (e.g. two PGS tracks at the same timestamp).
     let mut matches: Vec<(u64, u64, Option<u64>)> = Vec::new();
 

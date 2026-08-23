@@ -4,11 +4,11 @@ A Rust library and CLI for extracting, encoding, and transforming PGS (Presentat
 
 ### Cue-based extraction
 
-Most tools (ffmpeg, mkvextract) extract subtitle tracks by reading through the entire MKV file linearly — parsing every cluster and discarding the video/audio blocks they don't need. For a 40 GB Blu-ray remux where the PGS subtitle data is only a few megabytes, this means reading tens of gigabytes just to find the subtitle blocks.
+Most tools (ffmpeg, mkvextract) extract subtitle tracks by reading through the entire MKV file linearly, parsing every cluster and discarding the video/audio blocks they don't need. For a 40 GB Blu-ray remux where the PGS subtitle data is only a few megabytes, this means reading tens of gigabytes to find the subtitle blocks.
 
-libpgs takes a different approach for MKV files that contain a Cues index. It reads the Cues element to identify exactly which clusters hold subtitle data, then seeks directly to those locations — skipping everything else. It also uses `CueRelativePosition` for sub-cluster seeking when available, jumping straight to the relevant block within a cluster.
+libpgs takes a different approach for MKV files that contain a Cues index. It reads the Cues element to identify exactly which clusters hold subtitle data, then seeks directly to those locations, skipping everything else. It also uses `CueRelativePosition` for sub-cluster seeking when available, jumping straight to the relevant block within a cluster.
 
-The result is that extraction I/O scales with the size of the subtitle data, not the size of the file. On a typical Blu-ray remux, libpgs reads less than 1% of the file — often under 0.1% — compared to the full file read required by conventional tools. This is especially noticeable on network-attached storage where seek latency matters, and for batch workflows that process many large files. You can verify the difference on your own files with `libpgs bench`.
+The result is that extraction I/O scales with the size of the subtitle data, not the size of the file. On a typical Blu-ray remux, libpgs reads less than 1% of the file, often under 0.1%, compared to the full file read required by conventional tools. This is especially noticeable on network-attached storage where seek latency matters, and for batch workflows that process many large files. You can verify the difference on your own files with `libpgs bench`.
 
 When Cues are not present, libpgs falls back to a single-pass sequential scan.
 
@@ -122,13 +122,13 @@ libpgs extract movie.mkv -o out.sup --start 0:05:00          # From 5 minutes to
 libpgs stream movie.mkv --start 0:05:00 --end 0:10:00        # 5-minute window only
 ```
 
-Timestamps accept `HH:MM:SS.ms`, `MM:SS.ms`, `SS.ms`, or plain seconds. When a time range is specified, libpgs seeks directly to the target byte offset — it does not read and discard data before the start point. For MKV files with a Cues index, seeking is exact. For M2TS files, seeking uses binary search refinement to converge on the correct position despite variable bitrate. SUP files use simple bitrate estimation.
+Timestamps accept `HH:MM:SS.ms`, `MM:SS.ms`, `SS.ms`, or plain seconds. When a time range is specified, libpgs seeks directly to the target byte offset. It does not read and discard data before the start point. For MKV files with a Cues index, seeking is exact. For M2TS files, seeking uses binary search refinement to converge on the correct position despite variable bitrate. SUP files use simple bitrate estimation.
 
 If no display sets fall within the requested range, libpgs reports zero results with no error.
 
 ### Streaming to external scripts
 
-The `stream` command outputs newline-delimited JSON (NDJSON) to stdout, allowing any language to consume PGS data incrementally via a subprocess pipe. Display sets are flushed as soon as they are extracted — no temp files or waiting for the full file to be processed.
+The `stream` command outputs newline-delimited JSON (NDJSON) to stdout, allowing any language to consume PGS data incrementally via a subprocess pipe. Display sets are flushed as soon as they are extracted. There are no temp files and no waiting for the full file to be processed.
 
 The first line is a track discovery message with all available metadata:
 
@@ -136,7 +136,7 @@ The first line is a track discovery message with all available metadata:
 {"type":"tracks","tracks":[{"track_id":3,"language":"en","container":"Matroska","name":"English Subtitles","is_default":true,"is_forced":false,"display_set_count":1234,"indexed":true}]}
 ```
 
-Each subsequent line is a display set with fully parsed segment data organized into semantic sections — composition, windows, palettes, and objects:
+Each subsequent line is a display set with fully parsed segment data organized into semantic sections (composition, windows, palettes, and objects):
 
 ```json
 {"type":"display_set","track_id":3,"index":0,"pts":311580,"pts_ms":3462.0000,"composition":{"number":1,"state":"epoch_start","video_width":1920,"video_height":1080,"palette_only":false,"palette_id":0,"objects":[{"object_id":0,"window_id":0,"x":773,"y":108,"crop":null}]},"windows":[{"id":0,"x":773,"y":108,"width":377,"height":43}],"palettes":[{"id":0,"version":0,"entries":[{"id":0,"luminance":16,"cr":128,"cb":128,"alpha":0}]}],"objects":[{"id":0,"version":0,"sequence":"complete","data_length":8635,"width":377,"height":43,"bitmap":"<base64>"}]}
@@ -172,7 +172,7 @@ for line in proc.stdout:
         progress = f" ({msg['index']+1}/{total})" if total else ""
         comp = msg.get("composition") or {}
         n_objects = len(msg.get("objects", []))
-        print(f"Track {tid} @ {msg['pts_ms']:.1f}ms — "
+        print(f"Track {tid} @ {msg['pts_ms']:.1f}ms: "
               f"{comp.get('state', '?')} {n_objects} objects{progress}")
 ```
 
@@ -188,7 +188,7 @@ libpgs stream movie.mkv | python modify.py | libpgs encode -o modified.sup
 libpgs stream movie.mkv | libpgs encode -o roundtrip.sup
 ```
 
-The encode command reads from stdin and writes a `.sup` file. It accepts the `pts` field (90kHz integer ticks) as the primary timestamp; if absent, it falls back to `pts_ms * 90`. Track metadata lines (`{"type":"tracks",...}`) are silently skipped. If the input contains multiple `track_id` values, encode splits the output into separate files (`<stem>_track<id>.sup`).
+The encode command reads from stdin and writes a `.sup` file. It accepts the `pts` field (90kHz integer ticks) as the primary timestamp. If absent, it falls back to `pts_ms * 90`. Track metadata lines (`{"type":"tracks",...}`) are silently skipped. If the input contains multiple `track_id` values, encode splits the output into separate files (`<stem>_track<id>.sup`).
 
 ## License
 

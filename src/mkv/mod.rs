@@ -30,7 +30,7 @@ pub(crate) struct MkvMetadata {
     pub compression_map: HashMap<u64, ContentCompAlgo>,
     pub timestamp_scale: u64,
     pub cue_points: Option<Vec<cues::PgsCuePoint>>,
-    /// TrackUID → NUMBER_OF_FRAMES from Tags element.
+    /// TrackUID -> NUMBER_OF_FRAMES from Tags element.
     pub frame_counts: HashMap<u64, u64>,
     /// Segment duration in timestamp-scale units, if present in Info element.
     pub duration: Option<f64>,
@@ -163,7 +163,7 @@ impl TrackAssemblers {
         for pgs_block in pgs_blocks {
             let comp = self.compression.get(&pgs_block.track_number);
             let Some(decoded) = decode_block_data(&pgs_block.data, comp) else {
-                continue; // Skip blocks that fail decompression
+                continue; // skip blocks that fail decompression
             };
             let pts = mkv_timestamp_to_pts(pgs_block.timestamp, self.timestamp_scale);
             if let Some((assembler, display_sets)) = self.tracks.get_mut(&pgs_block.track_number) {
@@ -187,9 +187,8 @@ impl TrackAssemblers {
 
 /// Convert an MKV timestamp (in clock ticks) to PGS 90kHz PTS.
 pub(crate) fn mkv_timestamp_to_pts(mkv_ts: i64, timestamp_scale: u64) -> u64 {
-    // time_ns = mkv_ts * timestamp_scale
-    // pts_90khz = time_ns * 90_000 / 1_000_000_000 = time_ns * 9 / 100_000
     let time_ns = mkv_ts as i128 * timestamp_scale as i128;
+    // pts_90khz = time_ns * 90_000 / 1_000_000_000 = time_ns * 9 / 100_000
     let pts = time_ns * 9 / 100_000;
     pts.max(0) as u64
 }
@@ -234,7 +233,6 @@ pub(crate) fn extract_blocks_for_cue_point<R: Read + Seek>(
     visited_clusters: &mut std::collections::HashSet<u64>,
 ) -> Result<Vec<cluster::PgsBlock>, PgsError> {
     if let Some(rel_pos) = cp.relative_position {
-        // Direct seek: read only the referenced block.
         let cluster_data_start = match cluster_header_cache.get(&cp.cluster_position) {
             Some(&cached) => cached,
             None => {
@@ -259,7 +257,6 @@ pub(crate) fn extract_blocks_for_cue_point<R: Read + Seek>(
             Ok(Vec::new())
         }
     } else {
-        // No relative position — fall back to scanning entire cluster.
         if !visited_clusters.insert(cp.cluster_position) {
             return Ok(Vec::new());
         }
@@ -315,7 +312,6 @@ pub(crate) fn extract_via_cues_parallel(
     timestamp_scale: u64,
     num_workers: usize,
 ) -> Result<Vec<(u64, Vec<DisplaySet>)>, PgsError> {
-    // Sort cue points by file position for sequential access per worker.
     let mut sorted_cues = cue_points.to_vec();
     sorted_cues.sort_by_key(|cp| (cp.cluster_position, cp.relative_position.unwrap_or(0)));
 
@@ -323,7 +319,6 @@ pub(crate) fn extract_via_cues_parallel(
     // is split across workers (avoids duplicate scanning for fallback path).
     let chunks = partition_by_cluster(&sorted_cues, num_workers);
 
-    // Spawn parallel workers with scoped threads.
     let all_blocks: Result<Vec<Vec<cluster::PgsBlock>>, PgsError> = std::thread::scope(|s| {
         let handles: Vec<_> = chunks
             .into_iter()
@@ -346,7 +341,6 @@ pub(crate) fn extract_via_cues_parallel(
             .collect()
     });
 
-    // Merge all blocks, sort by timestamp, feed through assembler.
     let mut merged: Vec<cluster::PgsBlock> = all_blocks?.into_iter().flatten().collect();
     merged.sort_by_key(|b| (b.timestamp, b.track_number));
 
@@ -361,7 +355,6 @@ pub(crate) fn partition_by_cluster(
     sorted_cues: &[cues::PgsCuePoint],
     num_workers: usize,
 ) -> Vec<Vec<cues::PgsCuePoint>> {
-    // Group consecutive cue points by cluster_position.
     let mut groups: Vec<Vec<cues::PgsCuePoint>> = Vec::new();
     let mut current_cluster = u64::MAX;
     for cp in sorted_cues {
@@ -372,7 +365,6 @@ pub(crate) fn partition_by_cluster(
         groups.last_mut().unwrap().push(cp.clone());
     }
 
-    // Distribute groups across workers, balancing by count.
     let target_per_worker = sorted_cues.len().div_ceil(num_workers);
     let mut chunks: Vec<Vec<cues::PgsCuePoint>> = vec![Vec::new(); num_workers];
     let mut worker_idx = 0;
@@ -384,7 +376,6 @@ pub(crate) fn partition_by_cluster(
         }
     }
 
-    // Remove empty chunks.
     chunks.retain(|c| !c.is_empty());
     chunks
 }
@@ -402,7 +393,6 @@ pub(crate) fn process_pgs_block(
     display_sets: &mut Vec<DisplaySet>,
 ) {
     if data.len() >= 2 && data[0..2] == PGS_MAGIC {
-        // .sup format — each segment has a 13-byte "PG" header with its own PTS.
         let mut offset = 0;
         while offset < data.len() {
             match PgsSegment::parse(&data[offset..]) {
@@ -416,7 +406,6 @@ pub(crate) fn process_pgs_block(
             }
         }
     } else {
-        // Raw format — PTS comes from the MKV block timestamp.
         let segments = PgsSegment::parse_raw_segments(pts, 0, data);
         for segment in segments {
             if let Some(ds) = assembler.push(segment) {

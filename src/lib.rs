@@ -114,7 +114,7 @@ enum ExtractorInner {
 ///
 /// # Early Termination
 ///
-/// Simply drop the `Extractor` to stop extraction. No further I/O occurs.
+/// Drop the `Extractor` to stop extraction. No further I/O occurs.
 ///
 /// # History
 ///
@@ -163,7 +163,7 @@ impl Extractor {
     ///
     /// Performs initial metadata parsing (format detection, track discovery)
     /// but does NOT extract any display sets yet. All PGS tracks are selected
-    /// by default; use [`with_track_filter`](Extractor::with_track_filter) to restrict.
+    /// by default. Use [`with_track_filter`](Extractor::with_track_filter) to restrict.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, PgsError> {
         let path = path.as_ref();
         let file = File::open(path)?;
@@ -332,7 +332,7 @@ impl Extractor {
     /// calling `with_history(false)` skips the clone and reduces per-frame cost
     /// for graphically dense subtitles.
     ///
-    /// When disabled: `history()` returns an empty slice, `drain_history()`
+    /// When disabled, `history()` returns an empty slice, `drain_history()`
     /// returns an empty `Vec`, and `clear_history()` is a no-op.
     ///
     /// Must be called before the first call to `next()`.
@@ -559,14 +559,12 @@ impl Extractor {
             }
         }
 
-        // Build track info lookup from the pre-parsed metadata.
         let track_info_map: HashMap<u32, PgsTrackInfo> = self
             .tracks
             .iter()
             .map(|t| (t.track_id, t.clone()))
             .collect();
 
-        // Sequential drain and group.
         let results = self.by_ref().collect::<Result<Vec<_>, _>>()?;
         Ok(group_by_track(results, &track_info_map))
     }
@@ -600,7 +598,7 @@ impl Iterator for Extractor {
                 Some(Ok(tds)) => {
                     let pts_ms = tds.display_set.pts_ms;
 
-                    // Past end time — stop iteration entirely.
+                    // Past end time, stop iteration entirely.
                     if let Some(end) = self.time_range_end_ms {
                         if pts_ms > end {
                             self.inner = ExtractorInner::Done;
@@ -608,7 +606,7 @@ impl Iterator for Extractor {
                         }
                     }
 
-                    // Before start time — skip (safety net for estimation overshoot).
+                    // Before start time, skip (safety net for estimation overshoot).
                     if let Some(start) = self.time_range_start_ms {
                         if pts_ms < start {
                             continue;
@@ -818,7 +816,7 @@ pub fn extract_display_sets(
 /// Extract PGS Display Sets for a single track and return I/O statistics.
 ///
 /// Same as `extract_display_sets`, but also returns `ExtractionStats`
-/// with file size and bytes actually read — useful for benchmarking
+/// with file size and bytes actually read, useful for benchmarking
 /// and verifying the library's I/O efficiency.
 pub fn extract_display_sets_with_stats(
     path: &Path,

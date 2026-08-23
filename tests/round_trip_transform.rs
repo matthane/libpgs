@@ -1,5 +1,5 @@
 //! Integration test: extract PGS display sets, apply a visible transform
-//! (2× nearest-neighbor scale + palette color shift), write to a new .sup file,
+//! (2x nearest-neighbor scale + palette color shift), write to a new .sup file,
 //! then re-read and verify the result is structurally correct.
 //!
 //! Skipped at runtime if no fixture files are present.
@@ -24,7 +24,7 @@ fn available_fixtures() -> Vec<&'static str> {
         .collect()
 }
 
-/// Scale a palette-indexed bitmap 2× using nearest-neighbor interpolation.
+/// Scale a palette-indexed bitmap 2x using nearest-neighbor interpolation.
 fn scale_2x(pixels: &[u8], w: usize, h: usize) -> Vec<u8> {
     let new_w = w * 2;
     let new_h = h * 2;
@@ -43,7 +43,7 @@ fn shift_palette(entry: &PaletteEntry) -> PaletteEntry {
     PaletteEntry {
         id: entry.id,
         luminance: 255 - entry.luminance,
-        cr: entry.cb,  // swap Cr <-> Cb
+        cr: entry.cb,
         cb: entry.cr,
         alpha: entry.alpha,
     }
@@ -53,14 +53,13 @@ fn shift_palette(entry: &PaletteEntry) -> PaletteEntry {
 fn extract_transform_write_reread() {
     let fixtures = available_fixtures();
     if fixtures.is_empty() {
-        eprintln!("No fixture files found — skipping round_trip_transform test");
+        eprintln!("No fixture files found, skipping round_trip_transform test");
         return;
     }
 
     for fixture in &fixtures {
         eprintln!("--- Testing round-trip transform on: {fixture}");
 
-        // 1. Extract all display sets
         let all_tracks =
             libpgs::extract_all_display_sets(Path::new(fixture)).expect("extraction should succeed");
 
@@ -70,7 +69,6 @@ fn extract_transform_write_reread() {
             continue;
         }
 
-        // Use the first track that has display sets
         let track = all_tracks
             .iter()
             .find(|t| !t.display_sets.is_empty())
@@ -83,11 +81,9 @@ fn extract_transform_write_reread() {
             track.track.language
         );
 
-        // 2. Transform each display set: 2× scale + palette color shift
         let mut transformed = Vec::new();
 
         for ds in &track.display_sets {
-            // Parse the PCS
             let pcs_seg = ds
                 .segments
                 .iter()
@@ -95,14 +91,12 @@ fn extract_transform_write_reread() {
                 .expect("display set must have PCS");
             let pcs = pcs_seg.parse_pcs().expect("PCS should parse");
 
-            // Parse WDS if present
             let wds_opt = ds
                 .segments
                 .iter()
                 .find(|s| s.segment_type == SegmentType::WindowDefinition)
                 .and_then(|s| s.parse_wds());
 
-            // Parse all PDS segments and shift colors
             let palettes: Vec<PdsData> = ds
                 .segments
                 .iter()
@@ -115,7 +109,6 @@ fn extract_transform_write_reread() {
                 })
                 .collect();
 
-            // Collect and reassemble ODS fragments per object_id
             let ods_segments: Vec<_> = ds
                 .segments
                 .iter()
@@ -123,7 +116,6 @@ fn extract_transform_write_reread() {
                 .filter_map(|s| s.parse_ods())
                 .collect();
 
-            // Group ODS by object id, reassemble RLE data
             let mut ods_by_id: std::collections::BTreeMap<u16, (Option<u16>, Option<u16>, Vec<u8>)> =
                 std::collections::BTreeMap::new();
             for ods in &ods_segments {
@@ -139,7 +131,7 @@ fn extract_transform_write_reread() {
                 entry.2.extend_from_slice(&ods.rle_data);
             }
 
-            // Build scaled objects — keep original position, grow the bitmap.
+            // Keep the original position; only the bitmap grows.
             // Clamp the scaled size so the object fits within the video frame.
             let mut objects = Vec::new();
             let mut scaled_sizes: std::collections::BTreeMap<u16, (u16, u16)> =
@@ -149,11 +141,9 @@ fn extract_transform_write_reread() {
                 let w = w_opt.expect("ODS must have width");
                 let h = h_opt.expect("ODS must have height");
 
-                // Find this object's position from the PCS to know how much room we have
                 let co = pcs.objects.iter().find(|o| o.object_id == *id);
                 let (ox, oy) = co.map_or((0u16, 0u16), |c| (c.x, c.y));
 
-                // Clamp scaled dimensions so object stays within the video frame
                 let max_w = pcs.video_width.saturating_sub(ox);
                 let max_h = pcs.video_height.saturating_sub(oy);
                 let new_w = (w * 2).min(max_w);
@@ -162,7 +152,6 @@ fn extract_transform_write_reread() {
                 let pixels = decode_rle(rle_data, w, h).expect("RLE decode should succeed");
                 let scaled_full = scale_2x(&pixels, w as usize, h as usize);
 
-                // Crop the scaled bitmap to the clamped dimensions
                 let cropped = if new_w == w * 2 && new_h == h * 2 {
                     scaled_full
                 } else {
@@ -188,7 +177,7 @@ fn extract_transform_write_reread() {
                 });
             }
 
-            // Build new PCS — keep original positions, don't scale them
+            // Build new PCS, keep original positions, don't scale them
             let new_pcs = PcsData {
                 video_width: pcs.video_width,
                 video_height: pcs.video_height,
@@ -209,16 +198,14 @@ fn extract_transform_write_reread() {
                     .collect(),
             };
 
-            // Build new WDS — keep original positions, expand window to fit scaled objects
+            // Build new WDS, keep original positions, expand window to fit scaled objects
             let new_wds = wds_opt.map(|wds| WdsData {
                 windows: wds
                     .windows
                     .iter()
                     .map(|win| {
-                        // Expand window to at least fit the scaled objects placed in it
                         let mut needed_w = win.width * 2;
                         let mut needed_h = win.height * 2;
-                        // Clamp to video bounds from this position
                         needed_w = needed_w.min(pcs.video_width.saturating_sub(win.x));
                         needed_h = needed_h.min(pcs.video_height.saturating_sub(win.y));
                         WindowDefinition {
@@ -232,7 +219,6 @@ fn extract_transform_write_reread() {
                     .collect(),
             });
 
-            // Assemble via DisplaySetBuilder
             let mut builder = DisplaySetBuilder::new(ds.pts).pcs(new_pcs);
 
             if let Some(wds) = new_wds {
@@ -253,7 +239,6 @@ fn extract_transform_write_reread() {
 
         eprintln!("  Built {} transformed display sets", transformed.len());
 
-        // 3. Write to a temp .sup file
         let out_path = std::env::temp_dir().join(format!(
             "libpgs_test_transform_{}.sup",
             Path::new(fixture)
@@ -267,7 +252,6 @@ fn extract_transform_write_reread() {
         eprintln!("  Wrote {} bytes to {}", file_size, out_path.display());
         assert!(file_size > 0, "output .sup file should not be empty");
 
-        // 4. Re-read the written .sup file and verify structure
         let reread = libpgs::extract_all_display_sets(&out_path)
             .expect("re-reading written .sup should succeed");
         assert_eq!(reread.len(), 1, "SUP file should have exactly 1 track");
@@ -279,7 +263,6 @@ fn extract_transform_write_reread() {
             "re-read display set count should match written count"
         );
 
-        // 5. Verify each display set round-trips correctly
         for (i, (orig, reread)) in transformed.iter().zip(reread_ds.iter()).enumerate() {
             assert_eq!(
                 orig.pts, reread.pts,
@@ -295,14 +278,12 @@ fn extract_transform_write_reread() {
                 "DS {i}: segment count mismatch"
             );
 
-            // Verify PCS parsed correctly
             let orig_pcs = orig.segments[0].parse_pcs().unwrap();
             let reread_pcs = reread.segments[0].parse_pcs().unwrap();
             assert_eq!(orig_pcs.video_width, reread_pcs.video_width, "DS {i}: video width");
             assert_eq!(orig_pcs.video_height, reread_pcs.video_height, "DS {i}: video height");
             assert_eq!(orig_pcs.objects.len(), reread_pcs.objects.len(), "DS {i}: object count");
 
-            // Verify ODS bitmaps: decode and compare pixel data
             let orig_ods: Vec<_> = orig
                 .segments
                 .iter()
@@ -315,7 +296,6 @@ fn extract_transform_write_reread() {
                 .collect();
             assert_eq!(orig_ods.len(), reread_ods.len(), "DS {i}: ODS segment count");
 
-            // Verify palette color shift was preserved
             let orig_pds: Vec<_> = orig
                 .segments
                 .iter()
@@ -338,7 +318,6 @@ fn extract_transform_write_reread() {
             }
         }
 
-        // Clean up
         let _ = std::fs::remove_file(&out_path);
         eprintln!("  PASS: round-trip transform verified for {fixture}");
     }

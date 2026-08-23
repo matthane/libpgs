@@ -3,7 +3,7 @@ use crate::pgs::payload::{OdsData, PcsData, PdsData, SequenceFlag, WdsData};
 use crate::pgs::rle::encode_rle;
 use crate::pgs::segment::{CompositionState, PgsSegment, SegmentType};
 
-/// A complete PGS Display Set — a group of segments from PCS through END.
+/// A complete PGS Display Set, a group of segments from PCS through END.
 #[derive(Debug, Clone)]
 pub struct DisplaySet {
     /// Presentation timestamp of the PCS segment (90 kHz ticks).
@@ -42,7 +42,7 @@ impl DisplaySetAssembler {
     pub fn push(&mut self, segment: PgsSegment) -> Option<DisplaySet> {
         match segment.segment_type {
             SegmentType::PresentationComposition => {
-                // PCS opens a new display set. If we had a partial one, discard it.
+                // PCS opens a new display set, discard any partial one
                 self.current_segments.clear();
                 self.current_pts = segment.pts;
                 self.current_state = segment.composition_state();
@@ -52,7 +52,6 @@ impl DisplaySetAssembler {
             SegmentType::EndOfDisplaySet => {
                 self.current_segments.push(segment);
 
-                // Only emit if we have a PCS.
                 if self.current_state.is_some() {
                     let ds = DisplaySet {
                         pts: self.current_pts,
@@ -63,13 +62,12 @@ impl DisplaySetAssembler {
                     self.current_state = None;
                     Some(ds)
                 } else {
-                    // END without a preceding PCS — discard.
                     self.current_segments.clear();
                     None
                 }
             }
             _ => {
-                // Intermediate segment (WDS, PDS, ODS) — accumulate.
+                // Intermediate segments (WDS, PDS, ODS).
                 self.current_segments.push(segment);
                 None
             }
@@ -89,23 +87,15 @@ impl Default for DisplaySetAssembler {
     }
 }
 
-// ---------------------------------------------------------------------------
-// ObjectBitmap
-// ---------------------------------------------------------------------------
-
 /// A complete object bitmap for encoding into ODS segment(s).
 pub struct ObjectBitmap {
     pub id: u16,
     pub version: u8,
     pub width: u16,
     pub height: u16,
-    /// Flat pixel buffer — palette indices, row-major, length = width * height.
+    /// Flat pixel buffer: palette indices, row-major, length = width * height.
     pub pixels: Vec<u8>,
 }
-
-// ---------------------------------------------------------------------------
-// DisplaySetBuilder
-// ---------------------------------------------------------------------------
 
 /// Builder for constructing a DisplaySet from structured payload types.
 pub struct DisplaySetBuilder {
@@ -171,20 +161,16 @@ impl DisplaySetBuilder {
         let composition_state = pcs.composition_state;
         let mut segments = Vec::new();
 
-        // PCS segment
         segments.push(PgsSegment::from_pcs(self.pts, self.dts, &pcs));
 
-        // WDS segment
         if let Some(wds) = &self.wds {
             segments.push(PgsSegment::from_wds(self.pts, self.dts, wds));
         }
 
-        // PDS segments
         for pds in &self.palettes {
             segments.push(PgsSegment::from_pds(self.pts, self.dts, pds));
         }
 
-        // ODS segments (with fragmentation if needed)
         for obj in &self.objects {
             let rle = encode_rle(&obj.pixels, obj.width, obj.height).ok_or_else(|| {
                 PgsError::EncodingError(format!(
@@ -197,7 +183,6 @@ impl DisplaySetBuilder {
             let first_max_rle = MAX_SEGMENT_PAYLOAD - ODS_FIRST_HEADER;
 
             if ODS_FIRST_HEADER + total_rle <= MAX_SEGMENT_PAYLOAD {
-                // Single Complete segment
                 let ods = OdsData {
                     id: obj.id,
                     version: obj.version,
@@ -209,10 +194,8 @@ impl DisplaySetBuilder {
                 };
                 segments.push(PgsSegment::from_ods(self.pts, self.dts, &ods));
             } else {
-                // Fragment into First + Continuation(s) + Last
                 let mut offset = 0;
 
-                // First segment
                 let first_chunk = first_max_rle;
                 let ods_first = OdsData {
                     id: obj.id,
@@ -228,7 +211,6 @@ impl DisplaySetBuilder {
 
                 let cont_max_rle = MAX_SEGMENT_PAYLOAD - ODS_CONT_HEADER;
 
-                // Continuation + Last segments
                 while offset < total_rle {
                     let remaining = total_rle - offset;
                     let is_last = remaining <= cont_max_rle;
@@ -249,7 +231,6 @@ impl DisplaySetBuilder {
             }
         }
 
-        // END segment
         segments.push(PgsSegment::end_segment(self.pts, self.dts));
 
         Ok(DisplaySet {
@@ -345,8 +326,6 @@ mod tests {
         // Only PCS + END from the second set.
         assert_eq!(ds.segments.len(), 2);
     }
-
-    // -- DisplaySetBuilder tests --
 
     use crate::pgs::payload::{
         CompositionObject, PaletteEntry, WindowDefinition,

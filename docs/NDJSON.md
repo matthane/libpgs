@@ -4,7 +4,7 @@
 
 The `libpgs stream` command extracts PGS (Presentation Graphic Stream) subtitles from MKV and M2TS containers and outputs structured data as newline-delimited JSON (NDJSON) to stdout. The `libpgs encode` command reads the same format from stdin and writes `.sup` files. Together they enable full round-trip workflows: extract, transform with any language, and write back.
 
-Each NDJSON line is a self-contained JSON object. This enables any language to consume and produce PGS data via subprocess pipes — no temp files, no waiting for full extraction, no PGS format knowledge required.
+Each NDJSON line is a self-contained JSON object. This enables any language to consume and produce PGS data via subprocess pipes. No temp files, no waiting for full extraction, no PGS format knowledge required.
 
 ## Usage
 
@@ -18,7 +18,7 @@ libpgs stream <file> --start 0:05:00 --end 0:10:00   # 5-minute window only
 libpgs stream <file> --with-header                   # Prepend manifest header (.sup only)
 ```
 
-Timestamps accept `HH:MM:SS.ms`, `MM:SS.ms`, `SS.ms`, or plain seconds (e.g., `300`). When `--start` or `--end` is specified, libpgs seeks directly to the estimated byte offset — data before the start point is not read. If no display sets fall within the range, the stream outputs the tracks header followed by EOF (no error).
+Timestamps accept `HH:MM:SS.ms`, `MM:SS.ms`, `SS.ms`, or plain seconds (e.g., `300`). When `--start` or `--end` is specified, libpgs seeks directly to the estimated byte offset. Data before the start point is not read. If no display sets fall within the range, the stream outputs the tracks header followed by EOF (no error).
 
 Output is flushed after every line. Closing the pipe (e.g., `head -n 10`) causes a clean exit.
 
@@ -26,9 +26,9 @@ Output is flushed after every line. Closing the pipe (e.g., `head -n 10`) causes
 
 The output consists of up to three types of JSON lines:
 
-1. **`header`** — optional, emitted only for `.sup` inputs when `--with-header` is passed. When present, it is the very first line and carries total display-set counts so consumers can show a progress denominator immediately.
-2. **`tracks`** — always emitted (first line for containers, second line for `.sup`).
-3. **`display_set`** — one per subtitle event, for the remainder of the stream.
+1. `header`: optional, emitted only for `.sup` inputs when `--with-header` is passed. When present, it is the very first line and carries total display-set counts so consumers can show a progress denominator immediately.
+2. `tracks`: always emitted (first line for containers, second line for `.sup`).
+3. `display_set`: one per subtitle event, for the remainder of the stream.
 
 Check the `"type"` field to distinguish them.
 
@@ -36,7 +36,7 @@ Check the `"type"` field to distinguish them.
 
 ## Manifest Header (`.sup` only, opt-in)
 
-When `--with-header` is passed on a `.sup` input, libpgs runs a pre-scan of the file and prepends a single header line with total display-set counts. The flag is opt-in because the pre-scan adds an upfront latency before the first `display_set` line is emitted; consumers that don't need a progress denominator should omit the flag. Containers (MKV, M2TS) ignore the flag — counting there would require a full demux, and MKV already surfaces per-track `display_set_count` via the `tracks` line when Tags are present.
+When `--with-header` is passed on a `.sup` input, libpgs runs a pre-scan of the file and prepends a single header line with total display-set counts. The flag is opt-in because the pre-scan adds an upfront latency before the first `display_set` line is emitted. Consumers that don't need a progress denominator should omit the flag. Containers (MKV, M2TS) ignore the flag. Counting there would require a full demux, and MKV already surfaces per-track `display_set_count` via the `tracks` line when Tags are present.
 
 ```json
 {
@@ -50,12 +50,12 @@ When `--with-header` is passed on a `.sup` input, libpgs runs a pre-scan of the 
 | Field | Type | Description |
 |-------|------|-------------|
 | `total_display_sets` | number | All display sets (count of END segments). |
-| `total_content_display_sets` | number | PCSes with at least one composition object — visible subtitle frames. |
-| `total_clear_display_sets` | number | PCSes with zero composition objects — "remove from screen" display sets. |
+| `total_content_display_sets` | number | PCSes with at least one composition object (visible subtitle frames). |
+| `total_clear_display_sets` | number | PCSes with zero composition objects ("remove from screen" display sets). |
 
 `total_content_display_sets + total_clear_display_sets == total_display_sets`.
 
-The pre-scan reads only 13-byte segment headers (and tiny PCS payloads) while seeking over other payloads — ~1–2% of file bytes, completing in well under a second on multi-GB files.
+The pre-scan reads only 13-byte segment headers (and tiny PCS payloads) while seeking over other payloads, about 1-2% of file bytes, completing in well under a second on multi-GB files.
 
 ---
 
@@ -98,20 +98,20 @@ The first line (or the second, after the header on `.sup` inputs) describes all 
 
 ## Display Sets
 
-Each subsequent line represents one display set — a complete subtitle composition event.
+Each subsequent line represents one display set, a complete subtitle composition event.
 
 ### PGS background
 
 A PGS display set defines a single screen update. It contains:
-- A **composition** that describes what to show and where (screen dimensions, object placements)
-- **Windows** — rectangular screen regions where objects are drawn
-- **Palettes** — color lookup tables (YCrCbA format, up to 256 entries)
-- **Objects** — RLE-compressed bitmap images
+- `composition`: describes what to show and where (screen dimensions, object placements)
+- `windows`: rectangular screen regions where objects are drawn
+- `palettes`: color lookup tables (YCrCbA format, up to 256 entries)
+- `objects`: RLE-compressed bitmap images
 
 Display sets appear in three states:
-- **`epoch_start`** — A completely new display. Contains everything needed to render from scratch.
-- **`acquisition_point`** — A refresh point. Contains full replacement data for all objects. Used for mid-stream joining (e.g., seeking into a video).
-- **`normal`** — An incremental update. Only contains what changed since the last composition. Commonly used to clear the screen (0 composition objects).
+- `epoch_start`: a completely new display. Contains everything needed to render from scratch.
+- `acquisition_point`: a refresh point. Contains full replacement data for all objects. Used for mid-stream joining (e.g., seeking into a video).
+- `normal`: an incremental update. Only contains what changed since the last composition. Commonly used to clear the screen (0 composition objects).
 
 ### Full example
 
@@ -204,7 +204,7 @@ Display sets appear in three states:
 
 ### Composition object
 
-The `composition` field contains the presentation composition — the "control plane" of the display set.
+The `composition` field contains the presentation composition, the "control plane" of the display set.
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -212,9 +212,9 @@ The `composition` field contains the presentation composition — the "control p
 | `state` | `string` | `"epoch_start"`, `"acquisition_point"`, or `"normal"` |
 | `video_width` | `number` | Video frame width in pixels (e.g., 1920) |
 | `video_height` | `number` | Video frame height in pixels (e.g., 1080) |
-| `palette_only` | `boolean` | If `true`, this update only changes the palette — no new objects or positions |
+| `palette_only` | `boolean` | If `true`, this update only changes the palette (no new objects or positions) |
 | `palette_id` | `number` | ID of the palette used for this composition |
-| `objects` | `array` | Placement instructions — where to draw each object on screen |
+| `objects` | `array` | Placement instructions (where to draw each object on screen) |
 
 #### Composition object placements
 
@@ -302,9 +302,9 @@ Each entry in `objects` defines a subtitle image. The RLE-compressed bitmap data
 
 #### Bitmap format
 
-The `bitmap` field contains the decoded subtitle image as a base64-encoded buffer of palette entry indices. Each byte is an index (0–255) into the `palettes[].entries[]` array. Pixels are stored in row-major order (left to right, top to bottom). The decoded buffer is exactly `width * height` bytes.
+The `bitmap` field contains the decoded subtitle image as a base64-encoded buffer of palette entry indices. Each byte is an index (0-255) into the `palettes[].entries[]` array. Pixels are stored in row-major order (left to right, top to bottom). The decoded buffer is exactly `width * height` bytes.
 
-To render the image, look up each pixel's palette entry to get its YCrCb color and alpha value. libpgs does not perform color conversion — consumers choose their own color space handling.
+To render the image, look up each pixel's palette entry to get its YCrCb color and alpha value. libpgs does not perform color conversion. Consumers choose their own color space handling.
 
 #### Object fragmentation
 
@@ -430,9 +430,9 @@ for line in sys.stdin:
 
 ---
 
-## Encoding (NDJSON → .sup)
+## Encoding (NDJSON to .sup)
 
-The `libpgs encode` command reads the same NDJSON format that `stream` produces and writes a `.sup` file. This closes the round-trip loop — extract, transform with any language, and write back:
+The `libpgs encode` command reads the same NDJSON format that `stream` produces and writes a `.sup` file. This closes the round-trip loop of extracting, transforming with any language, and writing back:
 
 ```bash
 libpgs stream movie.mkv | python modify.py | libpgs encode -o modified.sup
@@ -469,7 +469,7 @@ The encode command consumes `display_set` lines and ignores `tracks` lines (and 
 If all display sets share the same `track_id` (or none is specified), the output is written directly to the `-o` path. If multiple `track_id` values appear, encode splits the output into separate files:
 
 ```
-output.sup          → output_track3.sup, output_track5.sup, ...
+output.sup          -> output_track3.sup, output_track5.sup, ...
 ```
 
 ### Round-trip example (Python)
@@ -519,8 +519,8 @@ Display sets with `null` composition are skipped with a stderr warning rather th
 
 ## Notes
 
-- **Timestamps** use a 90 kHz clock (standard for MPEG transport streams). Divide by 90 to get milliseconds, or use the pre-computed `pts_ms` field.
-- **Palette colors** are in YCrCb, not RGB. See the conversion formula above.
-- **Up to 2 objects** can be shown simultaneously per composition (e.g., top and bottom subtitle lines), though the PGS spec supports up to 64 per epoch.
-- **Normal-state display sets** with 0 composition objects are "clear screen" events — they signal that the previous subtitle should be removed.
-- **Palette-only updates** (`palette_only: true`) change colors without replacing objects. The screen content changes appearance but the bitmap data stays the same.
+- Timestamps use a 90 kHz clock (standard for MPEG transport streams). Divide by 90 to get milliseconds, or use the pre-computed `pts_ms` field.
+- Palette colors are in YCrCb, not RGB. See the conversion formula above.
+- Up to 2 objects can be shown simultaneously per composition (e.g., top and bottom subtitle lines), though the PGS spec supports up to 64 per epoch.
+- Normal-state display sets with 0 composition objects are "clear screen" events. They signal that the previous subtitle should be removed.
+- Palette-only updates (`palette_only: true`) change colors without replacing objects. The screen content changes appearance but the bitmap data stays the same.

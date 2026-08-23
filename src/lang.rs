@@ -15,7 +15,7 @@
 /// - 2-letter codes and BCP 47 tags (e.g. "zh-Hans") are passed through unchanged.
 /// - Unknown codes are passed through unchanged.
 pub(crate) fn normalize_language(code: &str) -> String {
-    // BCP 47 subtags (e.g. "zh-Hans") — normalize just the primary subtag.
+    // BCP 47 subtags (e.g. "zh-Hans"), normalize just the primary subtag.
     if let Some(dash) = code.find('-') {
         let primary = &code[..dash];
         let rest = &code[dash..];
@@ -45,9 +45,6 @@ fn normalize_primary(code: &str) -> String {
 /// commonly encountered in subtitle tracks, plus the full set of ISO 639-2/B
 /// codes that differ from their /T counterparts.
 fn iso639_2_to_1(code: &str) -> Option<&'static str> {
-    // This table includes:
-    // 1. All ISO 639-2/B codes that differ from /T (mapped to 2-letter)
-    // 2. Common ISO 639-2/T codes (mapped to 2-letter)
     match code {
         // ISO 639-2/B codes that differ from /T
         "alb" | "sqi" => Some("sq"),

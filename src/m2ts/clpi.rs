@@ -1,4 +1,4 @@
-//! BDMV CLPI file parser for PID → language mappings.
+//! BDMV CLPI file parser for PID -> language mappings.
 //!
 //! When an M2TS file lives inside a BDMV directory structure, the corresponding
 //! `.clpi` file in `CLIPINF/` contains stream attributes including language codes.
@@ -21,7 +21,7 @@ const PROGRAM_INFO_OFFSET_POS: usize = 12;
 const MIN_CLPI_SIZE: usize = 40;
 
 /// Attempt to find and parse a CLPI file corresponding to an M2TS file
-/// inside a BDMV/STREAM/ directory. Returns PID → language code mappings.
+/// inside a BDMV/STREAM/ directory. Returns PID -> language code mappings.
 ///
 /// Returns an empty map if the path is not inside a BDMV structure,
 /// the CLPI file does not exist, or parsing fails.
@@ -89,7 +89,6 @@ fn parse_sequence_info_times(data: &[u8]) -> Option<(u64, u64)> {
         return None;
     }
 
-    // First ATC sequence starts at offset 6.
     let atc_pos = 6;
     // spn_atc_start(4) + num_stc_sequences(1) + offset_stc_id(1) = 6 bytes
     if atc_pos + 6 > section.len() {
@@ -100,7 +99,6 @@ fn parse_sequence_info_times(data: &[u8]) -> Option<(u64, u64)> {
         return None;
     }
 
-    // First STC sequence starts at atc_pos + 6.
     let stc_pos = atc_pos + 6;
     // pcr_pid(2) + spn_stc_start(4) + presentation_start_time(4) + presentation_end_time(4) = 14
     if stc_pos + 14 > section.len() {
@@ -115,13 +113,12 @@ fn parse_sequence_info_times(data: &[u8]) -> Option<(u64, u64)> {
 
 /// Resolve the CLPI path from an M2TS path.
 ///
-/// `BDMV/STREAM/00001.m2ts` → `BDMV/CLIPINF/00001.clpi`
+/// `BDMV/STREAM/00001.m2ts` -> `BDMV/CLIPINF/00001.clpi`
 fn resolve_clpi_path(m2ts_path: &Path) -> Option<PathBuf> {
     let stem = m2ts_path.file_stem()?.to_str()?;
     let stream_dir = m2ts_path.parent()?;
     let stream_dir_name = stream_dir.file_name()?.to_str()?;
 
-    // Parent directory must be named "STREAM" (case-insensitive).
     if !stream_dir_name.eq_ignore_ascii_case("STREAM") {
         return None;
     }
@@ -139,7 +136,6 @@ fn resolve_clpi_path(m2ts_path: &Path) -> Option<PathBuf> {
     None
 }
 
-/// Read a u16 big-endian from a byte slice at the given offset.
 fn read_u16_be(data: &[u8], offset: usize) -> Option<u16> {
     if offset + 2 > data.len() {
         return None;
@@ -147,7 +143,6 @@ fn read_u16_be(data: &[u8], offset: usize) -> Option<u16> {
     Some(u16::from_be_bytes([data[offset], data[offset + 1]]))
 }
 
-/// Read a u32 big-endian from a byte slice at the given offset.
 fn read_u32_be(data: &[u8], offset: usize) -> Option<u32> {
     if offset + 4 > data.len() {
         return None;
@@ -160,18 +155,16 @@ fn read_u32_be(data: &[u8], offset: usize) -> Option<u32> {
     ]))
 }
 
-/// Parse a CLPI file's ProgramInfo section to extract PGS PID → language mappings.
+/// Parse a CLPI file's ProgramInfo section to extract PGS PID -> language mappings.
 fn parse_clpi_file(data: &[u8]) -> Result<HashMap<u16, String>, ()> {
     if data.len() < MIN_CLPI_SIZE {
         return Err(());
     }
 
-    // Validate magic.
     if &data[0..4] != CLPI_MAGIC {
         return Err(());
     }
 
-    // ProgramInfo section offset.
     let prog_info_offset = read_u32_be(data, PROGRAM_INFO_OFFSET_POS).ok_or(())? as usize;
     if prog_info_offset == 0 || prog_info_offset >= data.len() {
         return Err(());
@@ -184,28 +177,14 @@ fn parse_clpi_file(data: &[u8]) -> Result<HashMap<u16, String>, ()> {
 
     // u32 length, then data starts at +4.
     let _length = read_u32_be(section, 0).ok_or(())?;
-    // Skip reserved byte at offset 4 if present — number of program sequences is at +5
-    // Actually: the structure is length(4) + reserved(1) + num_sequences(1)
-    // But in practice some versions put num_sequences right at +4.
-    // The BD spec: after the length field, there's a count of program sequences.
-    // Let's follow the common layout:
-    //   [0..4]  u32 length
-    //   [4]     u8  reserved / padding
-    //   [5]     u8  number_of_program_sequences
-    // But some implementations use:
-    //   [0..4]  u32 length
-    //   [4]     u8  number_of_program_sequences
-    //
-    // We'll try the standard BD layout: count at offset 5 after the length.
+    // Count-of-sequences offset varies by implementation (5 or 4 after the length field).
     if section.len() < 6 {
         return Err(());
     }
 
-    // Try parsing with count at offset 5 (standard CLPI ProgramInfo).
     if let Some(m) = parse_program_info_sequences(section, 5) {
         return Ok(m);
     }
-    // Fallback: count at offset 4.
     if let Some(m) = parse_program_info_sequences(section, 4) {
         return Ok(m);
     }
@@ -248,7 +227,6 @@ fn parse_program_info_sequences(
         let num_groups = section[pos] as usize;
         pos += 1;
 
-        // Parse each stream entry.
         for _ in 0..num_streams {
             if pos + 3 > section.len() {
                 return None;
@@ -257,7 +235,6 @@ fn parse_program_info_sequences(
             let stream_pid = read_u16_be(section, pos)?;
             pos += 2;
 
-            // Length of stream coding info block.
             let coding_info_len = section[pos] as usize;
             pos += 1;
 
@@ -289,7 +266,6 @@ fn parse_program_info_sequences(
             pos += coding_info_len;
         }
 
-        // Skip group entries if present.
         for _ in 0..num_groups {
             // Each group has: u8 group_type, u16 group_info_length, then that many bytes
             // Simplified: skip 1 + variable. We need at least the type + length.
@@ -312,7 +288,7 @@ mod tests {
 
     #[test]
     fn test_resolve_clpi_path_valid_bdmv() {
-        // Use a synthetic path — no filesystem access needed for path logic.
+        // Use a synthetic path, no filesystem access needed for path logic.
         let path = Path::new("/media/disc/BDMV/STREAM/00001.m2ts");
         let stream_dir = path.parent().unwrap();
         let stream_dir_name = stream_dir.file_name().unwrap().to_str().unwrap();
@@ -360,10 +336,10 @@ mod tests {
 
         // Offset table (offsets at positions 8, 12, 16, 20):
         // [8]  SequenceInfo offset (unused, set to 0)
-        // [12] ProgramInfo offset — we'll put it at byte 40
+        // [12] ProgramInfo offset, we'll put it at byte 40
         // [16..] other offsets
         data.extend_from_slice(&0u32.to_be_bytes()); // [8] SequenceInfo
-        data.extend_from_slice(&40u32.to_be_bytes()); // [12] ProgramInfo → offset 40
+        data.extend_from_slice(&40u32.to_be_bytes()); // [12] ProgramInfo -> offset 40
         data.extend_from_slice(&0u32.to_be_bytes()); // [16]
         data.extend_from_slice(&0u32.to_be_bytes()); // [20]
         data.extend_from_slice(&0u32.to_be_bytes()); // [24]
@@ -469,7 +445,7 @@ mod tests {
     fn test_parse_clpi_und_language_filtered() {
         let data = build_clpi_with_pgs(0x1200, b"und");
         let result = parse_clpi_file(&data);
-        // "und" should be filtered out, so map is empty → returns None from
+        // "und" should be filtered out, so map is empty, returns None from
         // parse_program_info_sequences, but parse_clpi_file falls through to Ok(empty).
         match result {
             Ok(map) => assert!(map.is_empty()),
@@ -495,10 +471,10 @@ mod tests {
         data.extend_from_slice(b"HDMV0300");
 
         // Offset table:
-        // [8]  SequenceInfo offset — we'll put it at byte 40
+        // [8]  SequenceInfo offset, we'll put it at byte 40
         // [12] ProgramInfo offset (0 = not present)
         // [16..] other offsets
-        data.extend_from_slice(&40u32.to_be_bytes()); // [8] SequenceInfo → offset 40
+        data.extend_from_slice(&40u32.to_be_bytes()); // [8] SequenceInfo -> offset 40
         data.extend_from_slice(&0u32.to_be_bytes()); // [12] ProgramInfo
         data.extend_from_slice(&0u32.to_be_bytes()); // [16]
         data.extend_from_slice(&0u32.to_be_bytes()); // [20]

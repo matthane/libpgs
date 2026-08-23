@@ -46,9 +46,9 @@ pub(crate) struct MkvExtractorState {
     time_range_end_ms: Option<f64>,
 }
 
-/// Block sourcing strategy — each variant is a resumable state.
+/// Block sourcing strategy, each variant is a resumable state.
 enum MkvBlockSource {
-    /// Not yet initialized — `init_source()` will be called on first `next()`.
+    /// Not yet initialized, `init_source()` will be called on first `next()`.
     Uninitialized,
     /// Cues-based extraction: sequential seek to each cue point.
     Cues {
@@ -60,9 +60,7 @@ enum MkvBlockSource {
     /// Single-pass linear scan: read through the Segment, processing Clusters
     /// as they're encountered without building a map first.
     SequentialScan {
-        /// Current read position in the file.
         current_position: u64,
-        /// End of the Segment data.
         segment_data_end: u64,
     },
     /// Extraction complete.
@@ -81,7 +79,6 @@ impl MkvExtractorState {
         track_filter: Option<&[u32]>,
         strategy: MkvStrategy,
     ) -> Result<Self, PgsError> {
-        // Determine which tracks to extract.
         let active_tracks: Vec<u64> = if let Some(filter) = track_filter {
             metadata
                 .pgs_track_numbers
@@ -93,7 +90,6 @@ impl MkvExtractorState {
             metadata.pgs_track_numbers.clone()
         };
 
-        // Build track info map.
         let mut track_info = HashMap::new();
         for t in &metadata.pgs_tracks {
             if active_tracks.contains(&t.track_number) {
@@ -119,7 +115,6 @@ impl MkvExtractorState {
             }
         }
 
-        // Build assemblers for active tracks.
         let mut assemblers = HashMap::new();
         for &tn in &active_tracks {
             assemblers.insert(tn, DisplaySetAssembler::new());
@@ -152,7 +147,7 @@ impl MkvExtractorState {
         self.time_range_end_ms = end_ms;
     }
 
-    /// Initialize the block source strategy (lazy — called on first iteration).
+    /// Initialize the block source strategy (lazy, called on first iteration).
     ///
     /// Deferred from construction so that track metadata is available immediately
     /// without waiting for potentially expensive cluster map building.
@@ -163,8 +158,6 @@ impl MkvExtractorState {
             .first_cluster_position
             .ok_or_else(|| PgsError::InvalidMkv("no Clusters found".into()))?;
 
-        // Convert time range from ms to MKV timestamp units for cue point filtering.
-        // MKV timestamp units: time_ns / timestamp_scale. ms → ns: ms * 1_000_000.
         let start_mkv = self.time_range_start_ms.map(|ms| {
             (ms * 1_000_000.0 / self.timestamp_scale as f64) as u64
         });
@@ -214,12 +207,10 @@ impl MkvExtractorState {
             }
         }
 
-        // Sequential: reopen with a large buffer for linear throughput.
-        const SEQ_BUF_SIZE: usize = 2 * 1024 * 1024; // 2 MB
+        const SEQ_BUF_SIZE: usize = 2 * 1024 * 1024;
         let file = File::open(&self.path)?;
         self.reader = SeekBufReader::with_capacity(SEQ_BUF_SIZE, file);
 
-        // Estimate start position via binary search refinement.
         let segment_start = first_cluster;
         let segment_end = self.metadata.layout.segment_data_end;
         let scan_start = if let Some(start_mkv) = start_mkv {
@@ -231,7 +222,6 @@ impl MkvExtractorState {
                     let estimated =
                         segment_start + (segment_size as f64 * ratio) as u64;
 
-                    // Binary search: probe Cluster timestamps to converge.
                     let mut lo = segment_start;
                     let mut hi = estimated.min(segment_end);
                     let mut best = segment_start;
@@ -284,16 +274,14 @@ impl MkvExtractorState {
         }
 
         loop {
-            // Drain pending display sets first.
             if let Some(tds) = self.pending.pop_front() {
                 self.yielded_count += 1;
                 return Some(Ok(tds));
             }
 
-            // Advance the block source.
             match self.advance_source() {
-                Ok(true) => continue,     // Blocks were processed, check pending.
-                Ok(false) => return None, // Source exhausted.
+                Ok(true) => continue,
+                Ok(false) => return None,
                 Err(e) => {
                     self.source = MkvBlockSource::Done;
                     return Some(Err(e));
@@ -369,7 +357,6 @@ impl MkvExtractorState {
                     let data_start = self.reader.position();
 
                     if size.value == u64::MAX {
-                        // Unknown-size element — can't determine length.
                         self.source = MkvBlockSource::Done;
                         return Ok(false);
                     }
@@ -377,7 +364,6 @@ impl MkvExtractorState {
                     let element_end = data_start + size.value;
 
                     if id.value == ids::CLUSTER {
-                        // Process this cluster with fully sequential I/O.
                         let blocks = cluster::scan_cluster_for_pgs_sequential(
                             &mut self.reader,
                             data_start,
@@ -390,7 +376,6 @@ impl MkvExtractorState {
                         return Ok(true);
                     }
 
-                    // Not a cluster — drain (read through) to keep I/O sequential.
                     self.reader.drain(size.value)?;
                     *current_position = element_end;
                 }
@@ -406,7 +391,7 @@ impl MkvExtractorState {
         for block in blocks {
             let comp = self.compression.get(&block.track_number);
             let Some(decoded) = decode_block_data(&block.data, comp) else {
-                continue; // Skip blocks that fail decompression
+                continue; // skip blocks that fail decompression
             };
             let pts = mkv_timestamp_to_pts(block.timestamp, self.timestamp_scale);
 
@@ -489,7 +474,6 @@ impl MkvExtractorState {
             let size = read_element_size(&mut self.reader).ok()?;
 
             if id.value == ids::CLUSTER {
-                // Read children looking for Timestamp.
                 let cluster_end = self.reader.position() + size.value;
                 while self.reader.position() < cluster_end {
                     let child_id = read_element_id(&mut self.reader).ok()?;
@@ -500,7 +484,6 @@ impl MkvExtractorState {
                             .read_uint_be(child_size.value as usize)
                             .ok();
                     }
-                    // Skip non-Timestamp children.
                     self.reader
                         .seek_to(self.reader.position() + child_size.value)
                         .ok()?;
@@ -508,7 +491,6 @@ impl MkvExtractorState {
                 return None; // Cluster found but no Timestamp child.
             }
 
-            // Skip non-Cluster elements.
             self.reader
                 .seek_to(self.reader.position() + size.value)
                 .ok()?;
@@ -516,7 +498,6 @@ impl MkvExtractorState {
         None
     }
 
-    /// Get current bytes read from the underlying reader.
     pub(crate) fn bytes_read(&self) -> u64 {
         self.reader.bytes_read()
     }

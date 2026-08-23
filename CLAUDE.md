@@ -1,8 +1,8 @@
-# CLAUDE.md — libpgs
+# libpgs
 
 ## What is this project?
 
-libpgs is a Rust library + CLI for extracting, encoding, and transforming PGS (Presentation Graphic Stream) subtitles from MKV and M2TS/TS containers. It extracts PGS data with minimal I/O — skipping video/audio entirely — and supports round-trip workflows: read, modify, and write back PGS data.
+libpgs is a Rust library + CLI for extracting, encoding, and transforming PGS (Presentation Graphic Stream) subtitles from MKV and M2TS/TS containers. It extracts PGS data with minimal I/O, skipping video/audio entirely, and supports round-trip workflows: read, modify, and write back PGS data.
 
 ## Build & test
 
@@ -26,7 +26,7 @@ src/
 ├── lib.rs              # Public API: Extractor, batch functions, format detection
 ├── error.rs            # PgsError enum
 ├── io/
-│   └── reader.rs       # SeekBufReader — buffered I/O with position tracking
+│   └── reader.rs       # SeekBufReader: buffered I/O with position tracking
 ├── pgs/
 │   ├── segment.rs      # PgsSegment: parse/serialize PGS segments, factory methods
 │   ├── payload.rs      # PGS segment payload parsing + serialization (PCS, WDS, PDS, ODS)
@@ -43,15 +43,15 @@ src/
 │   ├── cues.rs         # Cues index parsing
 │   ├── cluster.rs      # Cluster scanning for PGS blocks
 │   ├── block.rs        # Block header parsing
-│   └── stream.rs       # MkvExtractorState — streaming state machine
+│   └── stream.rs       # MkvExtractorState: streaming state machine
 ├── m2ts/
 │   ├── mod.rs          # M2TS orchestrator, metadata parsing
 │   ├── ts_packet.rs    # TS packet format detection + parsing
 │   ├── pat.rs          # PAT parsing (program association)
 │   ├── pmt.rs          # PMT parsing (stream discovery)
 │   ├── pes.rs          # PES reassembly state machine
-│   ├── clpi.rs         # BDMV CLPI parser for PID → language fallback
-│   └── stream.rs       # M2tsExtractorState — streaming state machine
+│   ├── clpi.rs         # BDMV CLPI parser for PID-to-language fallback
+│   └── stream.rs       # M2tsExtractorState: streaming state machine
 └── cli/
     └── main.rs         # CLI binary: tracks, extract, stream, bench subcommands
 ```
@@ -65,70 +65,70 @@ src/
 **History catalog:** Every yielded display set is cloned into an internal `Vec`. Access via `history()` / `history_for_track()`. Manage memory via `drain_history()` / `clear_history()`.
 
 **MKV two-tier extraction strategy:**
-1. **Cues fast path** — seek directly to clusters via cue point offsets (uses `relative_position` for sub-cluster seeking)
-2. **Sequential scan** — single-pass linear read through the Segment with 2 MB I/O buffer, processing Clusters as encountered
+1. Cues fast path: seeks directly to clusters via cue point offsets (uses `relative_position` for sub-cluster seeking)
+2. Sequential scan: single-pass linear read through the Segment with 2 MB I/O buffer, processing Clusters as encountered
 
-**MKV parallel optimization:** For batch collection (`collect_by_track()`), if Cues are available and extraction hasn't started, uses scoped threads (1–8 workers) with independent file handles to pipeline NAS latency.
+**MKV parallel optimization:** For batch collection (`collect_by_track()`), if Cues are available and extraction hasn't started, uses scoped threads (1-8 workers) with independent file handles to pipeline NAS latency.
 
 **M2TS bulk PID scanning:** Reads 2MB blocks, checks PID bytes directly in buffer (~0.025% of packets need full header parsing). 2MB I/O buffer for NAS throughput.
 
-**M2TS BDMV language fallback:** When an M2TS file is inside a `BDMV/STREAM/` directory, the library reads the corresponding `.clpi` file from `BDMV/CLIPINF/` to get PID → language mappings. These are applied as a fallback only — PMT-provided language descriptors always take priority. Fail-silent if the CLPI is missing or unparseable.
+**M2TS BDMV language fallback:** When an M2TS file is inside a `BDMV/STREAM/` directory, the library reads the corresponding `.clpi` file from `BDMV/CLIPINF/` to get PID-to-language mappings. These are applied as a fallback only. PMT-provided language descriptors always take priority. Fail-silent if the CLPI is missing or unparseable.
 
-**Time-range seeking:** When a time range is specified via `with_time_range()`, each format seeks directly to the estimated byte offset — no data before the start point is read or processed. The iterator also enforces a safety-net filter: display sets with `pts_ms < start_ms` are skipped, and iteration stops when `pts_ms > end_ms`.
-- **MKV with Cues** — exact seeking by filtering cue points to the requested time range before iteration begins.
-- **M2TS** — binary search refinement: starts with a bitrate estimate, then probes the actual PTS at the estimated position and narrows the range iteratively (up to 20 probes of 512 KB each) to converge on the exact byte offset. BDMV uses CLPI `presentation_start_time`/`presentation_end_time` for the initial estimate; non-BDMV discovers last PTS by scanning the final 2 MB.
-- **MKV sequential** — binary search refinement: starts with a bitrate estimate from the Duration element, then probes Cluster timestamps at estimated positions (up to 20 iterations, scanning up to 512 KB per probe for the next Cluster header) to converge on the correct offset.
-- **SUP** — bitrate estimation: `byte_offset = file_size * (target_pts / duration)`, backed up by a small margin, then scan forward for PG magic alignment. Reads first/last PTS from segment headers.
+**Time-range seeking:** When a time range is specified via `with_time_range()`, each format seeks directly to the estimated byte offset. No data before the start point is read or processed. The iterator also enforces a safety-net filter: display sets with `pts_ms < start_ms` are skipped, and iteration stops when `pts_ms > end_ms`.
+- MKV with Cues: exact seeking by filtering cue points to the requested time range before iteration begins.
+- `M2TS`: binary search refinement. Starts with a bitrate estimate, then probes the actual PTS at the estimated position and narrows the range iteratively (up to 20 probes of 512 KB each) to converge on the exact byte offset. BDMV uses CLPI `presentation_start_time`/`presentation_end_time` for the initial estimate. Non-BDMV discovers last PTS by scanning the final 2 MB.
+- MKV sequential: binary search refinement. Starts with a bitrate estimate from the Duration element, then probes Cluster timestamps at estimated positions (up to 20 iterations, scanning up to 512 KB per probe for the next Cluster header) to converge on the correct offset.
+- `SUP`: bitrate estimation via `byte_offset = file_size * (target_pts / duration)`, backed up by a small margin, then scan forward for PG magic alignment. Reads first/last PTS from segment headers.
 
 ### Key types
 
-- `Extractor` — streaming iterator, the central API
-- `TrackDisplaySet` — a display set annotated with track_id, language, container
-- `DisplaySet` — PTS + composition state + ordered segments
-- `DisplaySetBuilder` — builder for constructing display sets from structured payload types (chainable API with automatic RLE encoding and ODS fragmentation)
-- `ObjectBitmap` — a complete object bitmap (id, dimensions, pixel buffer) for encoding into ODS segments
-- `PgsSegment` — type + PTS/DTS + payload, with serialize support and factory methods (`from_pcs`, `from_wds`, `from_pds`, `from_ods`, `end_segment`)
-- `PcsData` / `WdsData` / `PdsData` / `OdsData` — parsed payload types, each with `parse()` and `to_bytes()` for round-trip serialization. `OdsData` includes `rle_data` field for self-contained RLE bitmap bytes
-- `DisplaySetAssembler` — push-based state machine: PCS opens, END closes
-- `PesReassembler` — M2TS PES packet reassembly per PID
-- `MkvExtractorState` / `M2tsExtractorState` — format-specific streaming state machines
-- `SeekBufReader<R>` — buffered reader with absolute position tracking and I/O accounting
+- `Extractor`: streaming iterator, the central API
+- `TrackDisplaySet`: a display set annotated with track_id, language, container
+- `DisplaySet`: PTS + composition state + ordered segments
+- `DisplaySetBuilder`: builder for constructing display sets from structured payload types (chainable API with automatic RLE encoding and ODS fragmentation)
+- `ObjectBitmap`: a complete object bitmap (id, dimensions, pixel buffer) for encoding into ODS segments
+- `PgsSegment`: type + PTS/DTS + payload, with serialize support and factory methods (`from_pcs`, `from_wds`, `from_pds`, `from_ods`, `end_segment`)
+- `PcsData` / `WdsData` / `PdsData` / `OdsData`: parsed payload types, each with `parse()` and `to_bytes()` for round-trip serialization. `OdsData` includes `rle_data` field for self-contained RLE bitmap bytes
+- `DisplaySetAssembler`: push-based state machine. PCS opens a set, END closes it.
+- `PesReassembler`: M2TS PES packet reassembly per PID
+- `MkvExtractorState` / `M2tsExtractorState`: format-specific streaming state machines
+- `SeekBufReader<R>`: buffered reader with absolute position tracking and I/O accounting
 
 ### Public API (src/lib.rs)
 
 **Streaming:**
-- `Extractor::open(path)` → create extractor
-- `Extractor::with_track_filter(&[u32])` → restrict tracks (chainable, reopens file)
-- `Extractor::with_time_range(Option<f64>, Option<f64>)` → restrict to time window in ms (chainable, seeks to estimated offset)
-- `Extractor::tracks()` → discovered PGS tracks
-- `Extractor::history()` / `history_for_track(id)` → catalog of yielded display sets
-- `Extractor::drain_history()` / `clear_history()` → memory management
-- `Extractor::stats()` → I/O statistics
-- `Extractor::collect_by_track()` → exhaust + group by track (parallel optimization)
-- `Iterator::next()` → yields `Result<TrackDisplaySet, PgsError>`
+- `Extractor::open(path)`: create extractor
+- `Extractor::with_track_filter(&[u32])`: restrict tracks (chainable, reopens file)
+- `Extractor::with_time_range(Option<f64>, Option<f64>)`: restrict to time window in ms (chainable, seeks to estimated offset)
+- `Extractor::tracks()`: discovered PGS tracks
+- `Extractor::history()` / `history_for_track(id)`: catalog of yielded display sets
+- `Extractor::drain_history()` / `clear_history()`: memory management
+- `Extractor::stats()`: I/O statistics
+- `Extractor::collect_by_track()`: exhaust + group by track (parallel optimization)
+- `Iterator::next()`: yields `Result<TrackDisplaySet, PgsError>`
 
 **Batch convenience:**
-- `extract_all_display_sets(path)` → all tracks grouped
-- `extract_all_display_sets_with_stats(path)` → all tracks + I/O stats
-- `extract_display_sets(path, track_id)` → single track
-- `extract_display_sets_with_stats(path, track_id)` → single track + I/O stats
+- `extract_all_display_sets(path)`: all tracks grouped
+- `extract_all_display_sets_with_stats(path)`: all tracks + I/O stats
+- `extract_display_sets(path, track_id)`: single track
+- `extract_display_sets_with_stats(path, track_id)`: single track + I/O stats
 
 **Utilities:**
-- `list_pgs_tracks(path)` → discover tracks without extraction
-- `write_sup_file(display_sets, output)` → write .sup file
+- `list_pgs_tracks(path)`: discover tracks without extraction
+- `write_sup_file(display_sets, output)`: write .sup file
 
 **Encoding / round-trip:**
-- `DisplaySetBuilder::new(pts)` → builder for constructing display sets from scratch
-  - `.pcs(PcsData)` → set composition (required)
-  - `.wds(WdsData)` → set window definitions (optional)
-  - `.palette(PdsData)` → add palette (repeatable)
-  - `.object(ObjectBitmap)` → add bitmap object (repeatable, auto RLE-encoded and fragmented)
-  - `.build()` → `Result<DisplaySet, PgsError>`
-- `encode_rle(pixels, width, height)` → RLE-encode a pixel buffer
-- `decode_rle(rle_data, width, height)` → decode RLE to pixels
+- `DisplaySetBuilder::new(pts)`: builder for constructing display sets from scratch
+  - `.pcs(PcsData)`: set composition (required)
+  - `.wds(WdsData)`: set window definitions (optional)
+  - `.palette(PdsData)`: add palette (repeatable)
+  - `.object(ObjectBitmap)`: add bitmap object (repeatable, auto RLE-encoded and fragmented)
+  - `.build()`: `Result<DisplaySet, PgsError>`
+- `encode_rle(pixels, width, height)`: RLE-encode a pixel buffer
+- `decode_rle(rle_data, width, height)`: decode RLE to pixels
 - Payload types (`PcsData`, `WdsData`, `PdsData`, `OdsData`) all have `to_bytes()` for serialization
-- `PgsSegment::from_pcs/wds/pds/ods()` → create segments from payload types
-- `PgsSegment::set_pcs/wds/pds/ods_payload()` → update segment payloads in-place
+- `PgsSegment::from_pcs/wds/pds/ods()`: create segments from payload types
+- `PgsSegment::set_pcs/wds/pds/ods_payload()`: update segment payloads in-place
 
 ## CLI
 
@@ -140,20 +140,20 @@ libpgs encode -o <output.sup>                                               # En
 libpgs bench <file>                                                         # Benchmark I/O efficiency
 ```
 
-`extract` and `stream` accept `--start` and `--end` timestamps (`HH:MM:SS.ms`, `MM:SS.ms`, `SS.ms`, or plain seconds) to limit extraction to a time window. Seeks directly to the estimated offset — does not scan data before the start point.
+`extract` and `stream` accept `--start` and `--end` timestamps (`HH:MM:SS.ms`, `MM:SS.ms`, `SS.ms`, or plain seconds) to limit extraction to a time window. Seeks directly to the estimated offset. Does not scan data before the start point.
 
 ### Stream command (NDJSON protocol)
 
-The `stream` command exposes the `Extractor` streaming API over stdout as newline-delimited JSON, enabling any language to consume PGS data incrementally via a subprocess pipe — no temp files or waiting for full extraction. See `docs/NDJSON.md` for the full protocol reference.
+The `stream` command exposes the `Extractor` streaming API over stdout as newline-delimited JSON, enabling any language to consume PGS data incrementally via a subprocess pipe. No temp files, no waiting for full extraction. See `docs/NDJSON.md` for the full protocol reference.
 
-**Line 1 — track discovery:**
+**Line 1 (track discovery):**
 ```json
 {"type":"tracks","tracks":[{"track_id":3,"language":"en","container":"Matroska","name":"English Subtitles","is_default":true,"is_forced":false,"display_set_count":1234,"indexed":true}]}
 ```
 
 Track fields: `track_id`, `language` (nullable), `container`, `name` (nullable, MKV TrackName), `is_default` (nullable bool), `is_forced` (nullable bool), `display_set_count` (nullable, from MKV Tags NUMBER_OF_FRAMES), `indexed` (nullable bool, MKV only). M2TS tracks have `null` for MKV-specific fields.
 
-**Subsequent lines — one per display set, flushed immediately when yielded:**
+**Subsequent lines (one per display set, flushed as yielded):**
 
 Display sets use semantic grouping instead of a flat segment array. PCS data is in `composition`, WDS in `windows[]`, PDS in `palettes[]`, ODS in `objects[]`. END segments are omitted (no data).
 
@@ -165,7 +165,7 @@ Key fields: `composition.state` (`normal`/`acquisition_point`/`epoch_start`), `c
 
 **`--raw-payloads` flag:** When passed, each semantic item includes a `"payload"` field with base64-encoded raw segment bytes. Omitted by default.
 
-### Encode command (NDJSON → .sup)
+### Encode command (NDJSON to .sup)
 
 The `encode` command reads the same NDJSON format that `stream` produces from stdin and writes a `.sup` file. This closes the round-trip loop for external scripts: `stream | modify | encode`. Uses a hand-rolled JSON parser (no serde dependency) adapted from the test suite with `Result`-based error handling. Multi-track input is split into separate `<stem>_track<id>.sup` files. Timestamps: prefers `pts` (90kHz ticks), falls back to `pts_ms * 90`.
 
@@ -179,4 +179,4 @@ The `encode` command reads the same NDJSON format that `stream` produces from st
 
 ## Release hygiene
 
-- `Cargo.toml` version must match the latest git release tag (e.g., tag `v0.2.0` → `version = "0.2.0"`). When creating a release or noticing a mismatch, update `Cargo.toml` accordingly.
+- `Cargo.toml` version must match the latest git release tag (e.g., tag `v0.2.0` corresponds to `version = "0.2.0"`). When creating a release or noticing a mismatch, update `Cargo.toml` accordingly.

@@ -151,7 +151,6 @@ fn cmd_bench(args: &[String]) -> Result<(), libpgs::error::PgsError> {
     let stats = extractor.stats().clone();
     let elapsed = start.elapsed();
 
-    // Group results by track for display.
     let mut track_ds_counts: std::collections::HashMap<u32, (usize, usize)> =
         std::collections::HashMap::new();
     for tds in &results {
@@ -203,7 +202,6 @@ fn cmd_bench(args: &[String]) -> Result<(), libpgs::error::PgsError> {
     Ok(())
 }
 
-/// Parse a comma-separated list of track IDs (e.g. "3", "3,5,8").
 fn parse_track_ids(value: &str) -> Vec<u32> {
     value
         .split(',')
@@ -223,18 +221,15 @@ fn parse_timestamp(s: &str) -> Option<f64> {
     let parts: Vec<&str> = s.split(':').collect();
     match parts.len() {
         1 => {
-            // Plain seconds: "123.456"
             let secs: f64 = parts[0].parse().ok()?;
             Some(secs * 1000.0)
         }
         2 => {
-            // MM:SS or MM:SS.mmm
             let mins: f64 = parts[0].parse().ok()?;
             let secs: f64 = parts[1].parse().ok()?;
             Some((mins * 60.0 + secs) * 1000.0)
         }
         3 => {
-            // HH:MM:SS or HH:MM:SS.mmm
             let hours: f64 = parts[0].parse().ok()?;
             let mins: f64 = parts[1].parse().ok()?;
             let secs: f64 = parts[2].parse().ok()?;
@@ -316,8 +311,7 @@ fn cmd_stream(args: &[String]) -> Result<(), libpgs::error::PgsError> {
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
 
-    // Stream tracks header + display sets as NDJSON.
-    // If the consumer closes the pipe (BrokenPipe), exit cleanly.
+    // Exit cleanly if the consumer closes the pipe (BrokenPipe).
     match stream_ndjson(&mut out, &mut extractor, &input, raw_payloads, with_header) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
@@ -367,7 +361,6 @@ fn stream_ndjson(
         line.clear();
     }
 
-    // Emit tracks header as first line.
     let tracks = extractor.tracks();
     write!(line, "{{\"type\":\"tracks\",\"tracks\":[")?;
     for (ti, track) in tracks.iter().enumerate() {
@@ -393,10 +386,8 @@ fn stream_ndjson(
     flush_line(out, &line)?;
     line.clear();
 
-    // Per-track index counter for display set sequence numbers.
     let mut track_indices: std::collections::HashMap<u32, u64> = std::collections::HashMap::new();
 
-    // Stream display sets, one line per display set.
     for result in extractor {
         let tds = result.map_err(std::io::Error::other)?;
         let ds = &tds.display_set;
@@ -411,19 +402,15 @@ fn stream_ndjson(
             tds.track_id, current_index, ds.pts, ds.pts_ms,
         )?;
 
-        // -- composition (from PCS) --
         write_composition(&mut line, &ds.segments, raw_payloads)?;
         write!(line, ",")?;
 
-        // -- windows (from WDS) --
         write_windows(&mut line, &ds.segments, raw_payloads)?;
         write!(line, ",")?;
 
-        // -- palettes (from PDS) --
         write_palettes(&mut line, &ds.segments, raw_payloads)?;
         write!(line, ",")?;
 
-        // -- objects (from ODS) --
         write_objects(&mut line, &ds.segments, raw_payloads)?;
 
         writeln!(line, "}}")?;
@@ -592,14 +579,12 @@ fn write_objects(
     use libpgs::pgs::rle::decode_rle;
     use libpgs::pgs::segment::SegmentType;
 
-    // Collect ODS segments with parsed data.
     let ods_segments: Vec<_> = segments
         .iter()
         .filter(|s| s.segment_type == SegmentType::ObjectDefinition)
         .filter_map(|seg| seg.parse_ods().map(|ods| (seg, ods)))
         .collect();
 
-    // Group by object ID, preserving first-appearance order.
     let mut groups: Vec<(u16, Vec<(&libpgs::pgs::PgsSegment, libpgs::pgs::OdsData)>)> = Vec::new();
     for (seg, ods) in ods_segments {
         if let Some(group) = groups.iter_mut().find(|(id, _)| *id == ods.id) {
@@ -615,7 +600,6 @@ fn write_objects(
             write!(out, ",")?;
         }
 
-        // Get metadata from the first/complete fragment.
         let first_ods = &fragments[0].1;
         let is_reassembled = fragments.len() > 1;
         let sequence_str = if is_reassembled {
@@ -640,7 +624,6 @@ fn write_objects(
             write!(out, ",\"height\":{}", h)?;
         }
 
-        // Decode bitmap: concatenate RLE data from all fragments, then decode.
         if let (Some(w), Some(h)) = (width, height) {
             let mut rle_data = Vec::new();
             let mut rle_ok = true;
@@ -666,7 +649,6 @@ fn write_objects(
         }
 
         if raw_payloads {
-            // For reassembled objects, concatenate all raw payloads.
             if fragments.len() == 1 {
                 write_base64_field(out, b",\"payload\":\"", &fragments[0].0.payload)?;
             } else {
@@ -743,7 +725,6 @@ fn write_base64_field<W: Write>(out: &mut W, prefix: &[u8], data: &[u8]) -> std:
 }
 
 /// Base64-encode `data` directly into the writer without an intermediate String.
-/// Byte-for-byte identical to `base64_encode`.
 fn write_base64<W: Write>(out: &mut W, data: &[u8]) -> std::io::Result<()> {
     let mut buf = [0u8; 1024];
     let mut chunks = data.chunks_exact(3);
@@ -784,10 +765,6 @@ fn write_base64<W: Write>(out: &mut W, data: &[u8]) -> std::io::Result<()> {
     }
     Ok(())
 }
-
-// ---------------------------------------------------------------------------
-// encode command — JSON parser, base64 decoder, field extraction
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
 enum JsonValue {
@@ -1247,7 +1224,6 @@ fn cmd_encode(args: &[String]) -> Result<(), libpgs::error::PgsError> {
     let stdin = std::io::stdin();
     let reader = std::io::BufReader::new(stdin.lock());
 
-    // Collect display sets grouped by track_id.
     let mut track_display_sets: Vec<(u64, Vec<libpgs::pgs::DisplaySet>)> = Vec::new();
     let mut skipped = 0u64;
 
@@ -1299,7 +1275,6 @@ fn cmd_encode(args: &[String]) -> Result<(), libpgs::error::PgsError> {
 
         let track_id = json.get("track_id").and_then(|v| v.as_u64()).unwrap_or(0);
 
-        // Parse composition (required).
         let comp_val = json.get("composition");
         if comp_val.is_none() || comp_val.unwrap().is_null() {
             eprintln!("line {line_num}: skipping display set with null composition");
@@ -1311,7 +1286,6 @@ fn cmd_encode(args: &[String]) -> Result<(), libpgs::error::PgsError> {
 
         let mut builder = libpgs::pgs::DisplaySetBuilder::new(pts).pcs(pcs);
 
-        // Parse windows.
         if let Some(arr) = json.get("windows").and_then(|v| v.as_array()) {
             if !arr.is_empty() {
                 let wds = parse_wds_json(arr, line_num)
@@ -1320,7 +1294,6 @@ fn cmd_encode(args: &[String]) -> Result<(), libpgs::error::PgsError> {
             }
         }
 
-        // Parse palettes.
         if let Some(arr) = json.get("palettes").and_then(|v| v.as_array()) {
             if !arr.is_empty() {
                 let palettes = parse_pds_json(arr, line_num)
@@ -1331,7 +1304,6 @@ fn cmd_encode(args: &[String]) -> Result<(), libpgs::error::PgsError> {
             }
         }
 
-        // Parse objects.
         if let Some(arr) = json.get("objects").and_then(|v| v.as_array()) {
             for obj_val in arr {
                 let bitmap = parse_object_json(obj_val, line_num)
@@ -1342,7 +1314,6 @@ fn cmd_encode(args: &[String]) -> Result<(), libpgs::error::PgsError> {
 
         let ds = builder.build()?;
 
-        // Group by track_id.
         if let Some(group) = track_display_sets.iter_mut().find(|(tid, _)| *tid == track_id) {
             group.1.push(ds);
         } else {
@@ -1355,7 +1326,6 @@ fn cmd_encode(args: &[String]) -> Result<(), libpgs::error::PgsError> {
         return Ok(());
     }
 
-    // Write output.
     let total_ds: usize = track_display_sets.iter().map(|(_, dss)| dss.len()).sum();
 
     if track_display_sets.len() == 1 {
@@ -1481,7 +1451,6 @@ fn cmd_extract(args: &[String]) -> Result<(), libpgs::error::PgsError> {
     let start = Instant::now();
 
     if track_ids.len() == 1 {
-        // Single-track extraction.
         let tid = track_ids[0];
         println!("Extracting PGS track {} from: {}", tid, input.display());
 
@@ -1561,7 +1530,6 @@ fn cmd_extract(args: &[String]) -> Result<(), libpgs::error::PgsError> {
             elapsed_extract.as_secs_f64()
         );
 
-        // Derive output stem and extension from -o path.
         let stem = output
             .file_stem()
             .map(|s| s.to_string_lossy().to_string())
@@ -1573,7 +1541,7 @@ fn cmd_extract(args: &[String]) -> Result<(), libpgs::error::PgsError> {
         let parent = output.parent().unwrap_or_else(|| std::path::Path::new("."));
 
         if track_results.len() == 1 {
-            // Only one track — write directly to the specified output path.
+            // Only one track, write directly to the specified output path.
             let t = &track_results[0];
             libpgs::write_sup_file(&t.display_sets, &output)?;
             let file_size = std::fs::metadata(&output).map(|m| m.len()).unwrap_or(0);

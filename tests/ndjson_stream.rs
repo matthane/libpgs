@@ -27,7 +27,7 @@ fn available_fixtures() -> Vec<&'static str> {
         .collect()
 }
 
-/// Minimal JSON value parser — just enough for our NDJSON schema.
+/// Minimal JSON value parser, enough for our NDJSON schema.
 /// Avoids adding serde_json as a dev-dependency.
 #[derive(Debug, Clone)]
 enum JsonValue {
@@ -224,7 +224,6 @@ fn container_name(c: libpgs::ContainerFormat) -> &'static str {
     }
 }
 
-/// Run `libpgs stream` and collect NDJSON output lines.
 fn run_stream(fixture: &str, track_filter: Option<u32>) -> Vec<String> {
     let binary = env!("CARGO_BIN_EXE_libpgs");
     let mut cmd = Command::new(binary);
@@ -252,7 +251,6 @@ fn run_stream(fixture: &str, track_filter: Option<u32>) -> Vec<String> {
         .collect()
 }
 
-/// Run `libpgs stream --raw-payloads` and collect NDJSON output lines.
 fn run_stream_raw(fixture: &str) -> Vec<String> {
     let binary = env!("CARGO_BIN_EXE_libpgs");
     let output = Command::new(binary)
@@ -321,7 +319,6 @@ fn ndjson_tracks_header_matches_api() {
                 container_name(at.container),
             );
 
-            // Renamed field checks.
             let json_name = jt.get("name").unwrap();
             match &at.name {
                 Some(name) => assert_eq!(
@@ -403,7 +400,6 @@ fn ndjson_display_sets_match_batch_extraction() {
             ds_lines.len()
         );
 
-        // Build per-track lookup keyed by (track_id, pts).
         let mut batch_by_key: HashMap<
             (u32, u64),
             (&libpgs::PgsTrackInfo, &libpgs::pgs::display_set::DisplaySet),
@@ -428,7 +424,6 @@ fn ndjson_display_sets_match_batch_extraction() {
                 panic!("{fixture} line {i}: no batch match for track={tid} pts={pts}")
             });
 
-            // Verify index is sequential per track.
             let json_index = json.get("index").unwrap().as_u64().unwrap();
             let expected_index = track_index_counters.entry(tid).or_insert(0);
             assert_eq!(
@@ -437,10 +432,9 @@ fn ndjson_display_sets_match_batch_extraction() {
             );
             *expected_index += 1;
 
-            // pts and pts_ms.
             assert_eq!(pts, ds.pts as u64, "{fixture} line {i}: pts mismatch");
 
-            // Composition state — now in composition.state with snake_case.
+            // Composition state, now in composition.state with snake_case.
             let comp = json.get("composition").unwrap();
             if !comp.is_null() {
                 assert_eq!(
@@ -450,7 +444,6 @@ fn ndjson_display_sets_match_batch_extraction() {
                 );
             }
 
-            // Verify semantic arrays are present.
             assert!(
                 json.get("windows").is_some(),
                 "{fixture} line {i}: missing windows"
@@ -464,7 +457,6 @@ fn ndjson_display_sets_match_batch_extraction() {
                 "{fixture} line {i}: missing objects"
             );
 
-            // Verify segment counts by type match.
             use libpgs::pgs::segment::SegmentType;
             let pcs_count = ds
                 .segments
@@ -483,7 +475,7 @@ fn ndjson_display_sets_match_batch_extraction() {
                 .iter()
                 .filter(|s| s.segment_type == SegmentType::PaletteDefinition)
                 .count();
-            // Count unique object IDs (fragments are grouped).
+            // Fragments share an object id; dedup to count unique objects.
             let mut ods_ids: Vec<u16> = Vec::new();
             for seg in ds.segments.iter().filter(|s| s.segment_type == SegmentType::ObjectDefinition) {
                 if let Some(ods) = seg.parse_ods() {
@@ -562,7 +554,6 @@ fn ndjson_track_filter_matches_api() {
         let header = parse_json(&lines[0]);
         let json_tracks = header.get("tracks").unwrap().as_array().unwrap();
 
-        // Track header should only contain the filtered track.
         assert_eq!(
             json_tracks.len(),
             1,
@@ -573,7 +564,6 @@ fn ndjson_track_filter_matches_api() {
             tid as u64
         );
 
-        // Display set count should match.
         let ds_lines = &lines[1..];
         assert_eq!(
             ds_lines.len(),
@@ -581,7 +571,6 @@ fn ndjson_track_filter_matches_api() {
             "{fixture}: filtered display set count mismatch"
         );
 
-        // All display sets should be from the filtered track.
         for line in ds_lines {
             let json = parse_json(line);
             assert_eq!(json.get("track_id").unwrap().as_u64().unwrap(), tid as u64);
@@ -602,11 +591,9 @@ fn ndjson_raw_payloads_includes_base64() {
             continue;
         }
 
-        // Check a display set line has payload fields.
         let json = parse_json(&lines[1]);
         assert_eq!(json.get("type").unwrap().as_str().unwrap(), "display_set");
 
-        // Composition should have a payload field.
         let comp = json.get("composition").unwrap();
         if !comp.is_null() {
             let payload = comp.get("payload");
@@ -620,7 +607,6 @@ fn ndjson_raw_payloads_includes_base64() {
             );
         }
 
-        // Objects should have payload fields.
         let objects = json.get("objects").unwrap().as_array().unwrap();
         for obj in objects {
             let payload = obj.get("payload");
@@ -645,7 +631,6 @@ fn ndjson_default_mode_no_payload() {
             continue;
         }
 
-        // Check that default mode does NOT include payload fields.
         let json = parse_json(&lines[1]);
         let comp = json.get("composition").unwrap();
         if !comp.is_null() {
@@ -665,7 +650,6 @@ fn ndjson_default_mode_no_payload() {
     }
 }
 
-/// Simple base64 decoder for tests.
 fn base64_decode(s: &str) -> Vec<u8> {
     const TABLE: [u8; 128] = {
         let mut t = [255u8; 128];

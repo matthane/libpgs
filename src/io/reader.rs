@@ -1,6 +1,6 @@
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom};
 
-const DEFAULT_BUF_SIZE: usize = 64 * 1024; // 64 KiB
+const DEFAULT_BUF_SIZE: usize = 64 * 1024;
 
 /// A buffered reader with seek-aware skip optimization and position tracking.
 ///
@@ -54,16 +54,14 @@ impl<R: Read + Seek> SeekBufReader<R> {
             return Ok(());
         }
 
-        // Check how many bytes are available in the buffer.
         let buffered = self.inner.buffer().len() as u64;
 
         if n <= buffered {
-            // Skip within the buffer — no syscall needed.
+            // Skip within the buffer, no syscall needed.
             self.inner.consume(n as usize);
             self.pos += n;
             Ok(())
         } else {
-            // Consume whatever is buffered, then seek past the rest.
             let remaining = n - buffered;
             self.inner.consume(buffered as usize);
             self.pos += buffered;
@@ -79,7 +77,6 @@ impl<R: Read + Seek> SeekBufReader<R> {
             return Ok(());
         }
 
-        // If seeking forward within a reasonable range, try skip.
         if pos > self.pos {
             let delta = pos - self.pos;
             let buffered = self.inner.buffer().len() as u64;
@@ -90,7 +87,6 @@ impl<R: Read + Seek> SeekBufReader<R> {
             }
         }
 
-        // General seek.
         self.inner.seek(SeekFrom::Start(pos))?;
         self.pos = pos;
         Ok(())
@@ -151,7 +147,6 @@ impl<R: Read + Seek> SeekBufReader<R> {
     pub fn drain(&mut self, n: u64) -> io::Result<()> {
         let mut remaining = n;
 
-        // First consume whatever is in the buffer.
         let buffered = self.inner.buffer().len() as u64;
         if buffered > 0 {
             let consume = remaining.min(buffered);
@@ -161,7 +156,6 @@ impl<R: Read + Seek> SeekBufReader<R> {
             remaining -= consume;
         }
 
-        // Read through the rest in chunks using the BufReader's internal buffer.
         // We use fill_buf + consume to avoid allocating a separate buffer.
         while remaining > 0 {
             let buf = self.inner.fill_buf()?;

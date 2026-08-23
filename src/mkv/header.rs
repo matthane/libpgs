@@ -83,7 +83,7 @@ pub fn parse_segment<R: Read + Seek>(
     let size = read_element_size(reader)?;
     let segment_data_start = reader.position();
     let segment_data_end = if size.value == u64::MAX {
-        u64::MAX // Unknown size — read until EOF.
+        u64::MAX // unknown size, read until EOF
     } else {
         segment_data_start + size.value
     };
@@ -94,14 +94,12 @@ pub fn parse_segment<R: Read + Seek>(
         ..Default::default()
     };
 
-    // Scan top-level Segment children to find SeekHead (and possibly other elements).
-    // We scan until we find a Cluster (which means we've passed the metadata section)
-    // or until we've found a SeekHead.
+    // Stop scanning once a Cluster is found. That marks the end of the metadata section.
     while reader.position() < segment_data_end {
         let elem_pos = reader.position();
         let child_id = match read_element_id(reader) {
             Ok(id) => id,
-            Err(_) => break, // EOF or corrupted — stop scanning.
+            Err(_) => break, // EOF or corrupted, stop scanning
         };
         let child_size = match read_element_size(reader) {
             Ok(s) => s,
@@ -145,7 +143,6 @@ pub fn parse_segment<R: Read + Seek>(
                 break;
             }
             _ => {
-                // Skip unknown elements.
                 if child_size.value != u64::MAX {
                     reader.skip(child_size.value)?;
                 } else {
@@ -154,10 +151,6 @@ pub fn parse_segment<R: Read + Seek>(
             }
         }
     }
-
-    // If SeekHead gave us positions, convert them to absolute positions.
-    // SeekHead positions are relative to segment_data_start.
-    // (Already handled in parse_seekhead)
 
     Ok(layout)
 }
@@ -249,8 +242,6 @@ fn parse_seek_entry<R: Read + Seek>(
     Ok(())
 }
 
-/// Parse the Info element to get TimestampScale.
-/// Returns the timestamp scale in nanoseconds (default 1,000,000 = 1ms).
 /// Parsed fields from the Segment/Info element.
 pub struct SegmentInfo {
     /// Timestamp scale in nanoseconds per MKV clock tick (default: 1,000,000 = 1ms).
@@ -259,6 +250,8 @@ pub struct SegmentInfo {
     pub duration: Option<f64>,
 }
 
+/// Parse the Info element to get TimestampScale.
+/// Returns the timestamp scale in nanoseconds (default 1,000,000 = 1ms).
 pub fn parse_info<R: Read + Seek>(
     reader: &mut SeekBufReader<R>,
     info_position: u64,

@@ -28,7 +28,7 @@ pub(crate) struct M2tsMetadata {
     /// Subtracted from PGS timestamps to normalize them to stream-relative values.
     /// Zero when no CLPI is available (no adjustment).
     pub pts_offset: u64,
-    /// Presentation end time (90 kHz ticks, absolute — before offset subtraction).
+    /// Presentation end time (90 kHz ticks, absolute, before offset subtraction).
     /// From CLPI when available, otherwise discovered by scanning near EOF.
     pub pts_end: Option<u64>,
 }
@@ -47,13 +47,11 @@ pub(crate) fn prepare_m2ts_metadata<R: Read + Seek>(
         return Err(PgsError::NoPgsTracks);
     }
 
-    // Apply CLPI language fallback for tracks missing PMT language descriptors.
     let tracks = apply_clpi_fallback(tracks, m2ts_path);
 
     let pgs_pids: Vec<u16> = tracks.iter().map(|t| t.pid).collect();
     let file_size = reader.file_size()?;
 
-    // Extract presentation times from CLPI for timestamp normalization and seeking.
     let (pts_offset, pts_end) = match m2ts_path.and_then(clpi::clpi_presentation_times) {
         Some((start, end)) => (start, Some(end)),
         None => (0, None),
@@ -182,14 +180,12 @@ fn find_last_pts_inner<R: Read + Seek>(
     let packet_size = format.packet_size();
     let sync_offset = format.sync_offset();
 
-    // Seek to the tail of the file.
     let scan_start = file_size.saturating_sub(TAIL_SCAN_SIZE);
     reader.seek_to(scan_start).ok()?;
 
     let remaining = (file_size - scan_start) as usize;
     let block = reader.read_bytes(remaining).ok()?;
 
-    // Find packet alignment.
     let mut offset = find_sync_start(&block, sync_offset, packet_size)?;
 
     let mut last_pts: Option<u64> = None;
@@ -197,7 +193,7 @@ fn find_last_pts_inner<R: Read + Seek>(
     while offset + packet_size <= block.len() {
         let ts_pos = offset + sync_offset;
         if block[ts_pos] != ts_packet::SYNC_BYTE {
-            // Lost sync — try to recover.
+            // Lost sync, try to recover.
             match find_sync_start(&block[offset + 1..], sync_offset, packet_size) {
                 Some(resync) => {
                     offset = offset + 1 + resync;
@@ -210,7 +206,6 @@ fn find_last_pts_inner<R: Read + Seek>(
         // Check PUSI (Payload Unit Start Indicator).
         let pusi = block[ts_pos + 1] & 0x40 != 0;
         if pusi {
-            // Extract PTS from PES header if present.
             if let Some(pts) = extract_pts_from_ts_packet(&block[ts_pos..ts_pos + 188]) {
                 last_pts = Some(pts);
             }
@@ -230,12 +225,11 @@ pub(crate) fn extract_pts_from_ts_packet(ts_data: &[u8]) -> Option<u64> {
         return None;
     }
 
-    // Parse adaptation field to find payload start.
     let afc = (ts_data[3] >> 4) & 0x03;
     let payload_start = match afc {
-        0b01 => 4,                                       // payload only
-        0b11 => 5 + ts_data[4] as usize,                 // adaptation + payload
-        _ => return None,                                 // no payload
+        0b01 => 4, // payload only
+        0b11 => 5 + ts_data[4] as usize, // adaptation field + payload
+        _ => return None, // no payload
     };
 
     if payload_start + 14 > 188 {
@@ -244,7 +238,6 @@ pub(crate) fn extract_pts_from_ts_packet(ts_data: &[u8]) -> Option<u64> {
 
     let payload = &ts_data[payload_start..];
 
-    // Check PES start code: 0x00 0x00 0x01
     if payload.len() < 14 || payload[0] != 0x00 || payload[1] != 0x00 || payload[2] != 0x01 {
         return None;
     }
@@ -383,7 +376,6 @@ mod tests {
         ext
     }
 
-    /// Write stream data to a temp file and create an M2tsExtractorState.
     fn make_extractor(
         data: &[u8],
         pids: &[u16],
@@ -456,7 +448,7 @@ mod tests {
     #[test]
     fn test_streaming_pts_offset_saturating() {
         let data = build_multi_pid_stream();
-        // Offset larger than PTS=90000 — should clamp to 0, not wrap.
+        // Offset larger than PTS=90000, should clamp to 0, not wrap.
         let offset = 100_000u64;
         let mut ext =
             make_extractor_with_offset(&data, &[0x1100], None, offset);

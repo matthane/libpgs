@@ -6,9 +6,7 @@
 
 use crate::pgs::segment::CompositionState;
 
-// ---------------------------------------------------------------------------
 // Helpers
-// ---------------------------------------------------------------------------
 
 fn u16_be(data: &[u8], offset: usize) -> u16 {
     u16::from_be_bytes([data[offset], data[offset + 1]])
@@ -28,9 +26,7 @@ fn push_u24_be(buf: &mut Vec<u8>, val: u32) {
     buf.push(val as u8);
 }
 
-// ---------------------------------------------------------------------------
-// PCS — Presentation Composition Segment (0x16)
-// ---------------------------------------------------------------------------
+// PCS: Presentation Composition Segment (0x16)
 
 /// Parsed Presentation Composition Segment payload.
 #[derive(Debug, Clone)]
@@ -160,9 +156,7 @@ impl PcsData {
     }
 }
 
-// ---------------------------------------------------------------------------
-// WDS — Window Definition Segment (0x17)
-// ---------------------------------------------------------------------------
+// WDS: Window Definition Segment (0x17)
 
 /// Parsed Window Definition Segment payload.
 #[derive(Debug, Clone)]
@@ -224,9 +218,7 @@ impl WdsData {
     }
 }
 
-// ---------------------------------------------------------------------------
-// PDS — Palette Definition Segment (0x14)
-// ---------------------------------------------------------------------------
+// PDS: Palette Definition Segment (0x14)
 
 /// Parsed Palette Definition Segment payload.
 #[derive(Debug, Clone)]
@@ -298,9 +290,7 @@ impl PdsData {
     }
 }
 
-// ---------------------------------------------------------------------------
-// ODS — Object Definition Segment (0x15)
-// ---------------------------------------------------------------------------
+// ODS: Object Definition Segment (0x15)
 
 /// Fragment position within a (possibly multi-segment) object.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -354,9 +344,9 @@ pub struct OdsData {
     pub sequence: SequenceFlag,
     /// Total object data length (u24), includes 4 bytes for width+height.
     pub data_length: u32,
-    /// Image width — present only on `Complete` or `First` fragments.
+    /// Image width, present only on `Complete` or `First` fragments.
     pub width: Option<u16>,
-    /// Image height — present only on `Complete` or `First` fragments.
+    /// Image height, present only on `Complete` or `First` fragments.
     pub height: Option<u16>,
     /// Raw RLE bitmap bytes (after the ODS header).
     pub rle_data: Vec<u8>,
@@ -375,8 +365,6 @@ impl OdsData {
 
         let is_first = matches!(sequence, SequenceFlag::Complete | SequenceFlag::First);
 
-        // Only First/Complete fragments have data_length + width + height after
-        // the 4-byte header. Continuation/Last fragments go straight to RLE data.
         let (data_length, width, height, rle_offset) = if is_first {
             if payload.len() < 11 {
                 return None;
@@ -424,14 +412,12 @@ impl OdsData {
     }
 }
 
-// ---------------------------------------------------------------------------
 // ODS RLE data extraction
-// ---------------------------------------------------------------------------
 
 /// Extract the RLE data bytes from an ODS segment payload.
 ///
 /// For Complete/First segments, RLE starts at byte 11 (after 4-byte header + 3-byte data_length + 4-byte dimensions).
-/// For Continuation/Last segments, RLE starts at byte 4 (after 4-byte header only — no data_length or dimensions).
+/// For Continuation/Last segments, RLE starts at byte 4 (after 4-byte header only, no data_length or dimensions).
 ///
 /// Returns `None` if the payload is too short.
 pub fn ods_rle_data(payload: &[u8], sequence: SequenceFlag) -> Option<&[u8]> {
@@ -445,9 +431,7 @@ pub fn ods_rle_data(payload: &[u8], sequence: SequenceFlag) -> Option<&[u8]> {
     Some(&payload[offset..])
 }
 
-// ---------------------------------------------------------------------------
-// ParsedPayload — dispatch enum
-// ---------------------------------------------------------------------------
+// ParsedPayload: dispatch enum
 
 /// A parsed segment payload, dispatched by segment type.
 #[derive(Debug, Clone)]
@@ -458,10 +442,6 @@ pub enum ParsedPayload {
     Ods(OdsData),
     End,
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

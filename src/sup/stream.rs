@@ -12,7 +12,7 @@ const SUP_TAIL_SCAN: u64 = 64 * 1024;
 
 /// Streaming state machine for reading raw `.sup` files (concatenated PGS segments).
 ///
-/// A `.sup` file contains a single PGS track — segments are read sequentially
+/// A `.sup` file contains a single PGS track. Segments are read sequentially
 /// and assembled into display sets via [`DisplaySetAssembler`].
 pub(crate) struct SupExtractorState {
     reader: SeekBufReader<File>,
@@ -54,7 +54,6 @@ impl SupExtractorState {
                 }
             };
 
-            // Read last PTS by scanning backward from EOF.
             let last_pts = {
                 let scan_start = file_size.saturating_sub(SUP_TAIL_SCAN);
                 let _ = self.reader.seek_to(scan_start);
@@ -72,17 +71,14 @@ impl SupExtractorState {
                     let target_pts = (start * 90.0) as u64;
                     let ratio = target_pts as f64 / duration as f64;
                     let estimated = (file_size as f64 * ratio) as u64;
-                    // Back up by margin.
                     let margin = (2 * 1024 * 1024u64).min(file_size / 100);
                     let seek_to = estimated.saturating_sub(margin);
                     let _ = self.reader.seek_to(seek_to);
-                    // Scan forward to next PG magic for alignment.
                     self.scan_to_pg_magic();
                     return;
                 }
             }
 
-            // Fallback: start from beginning.
             let _ = self.reader.seek_to(0);
         }
     }
@@ -94,10 +90,8 @@ impl SupExtractorState {
             match self.reader.try_read_exact(&mut buf) {
                 Ok(true) => {
                     if buf[0] == PGS_MAGIC[0] {
-                        // Check next byte.
                         match self.reader.try_read_exact(&mut buf) {
                             Ok(true) if buf[0] == PGS_MAGIC[1] => {
-                                // Found PG magic — rewind 2 bytes.
                                 let pos = self.reader.position();
                                 let _ = self.reader.seek_to(pos - 2);
                                 return;
@@ -118,7 +112,6 @@ impl SupExtractorState {
         }
 
         loop {
-            // Read the 13-byte PGS segment header.
             let mut header = [0u8; HEADER_SIZE];
             match self.reader.try_read_exact(&mut header) {
                 Ok(false) => {
@@ -132,7 +125,6 @@ impl SupExtractorState {
                 }
             }
 
-            // Validate PG magic bytes.
             if header[0] != PGS_MAGIC[0] || header[1] != PGS_MAGIC[1] {
                 self.done = true;
                 return Some(Err(PgsError::InvalidPgs(format!(
@@ -158,7 +150,6 @@ impl SupExtractorState {
 
             let payload_size = u16::from_be_bytes([header[11], header[12]]) as usize;
 
-            // Read payload.
             let payload = if payload_size > 0 {
                 match self.reader.read_bytes(payload_size) {
                     Ok(p) => p,
@@ -178,7 +169,7 @@ impl SupExtractorState {
                 payload,
             };
 
-            // Push into assembler — yields a DisplaySet when END closes a set.
+            // Push into assembler, yields a DisplaySet when END closes a set.
             if let Some(ds) = self.assembler.push(segment) {
                 return Some(Ok(TrackDisplaySet {
                     track_id: 0,
@@ -209,9 +200,9 @@ pub struct SupDisplaySetCounts {
 }
 
 /// Fast pre-scan of a `.sup` file that returns `(total, content, clear)` display
-/// set counts by walking segment headers only — no RLE decoding, no assembler.
+/// set counts by walking segment headers only, no RLE decoding, no assembler.
 ///
-/// Touches ~1–2% of file bytes: reads the 13-byte header of every segment plus
+/// Touches ~1-2% of file bytes: reads the 13-byte header of every segment plus
 /// the payload of every PCS (tiny, usually <64 bytes), and seeks over all other
 /// payloads. Completes in well under a second on multi-GB files.
 pub fn count_display_sets(path: &Path) -> Result<SupDisplaySetCounts, PgsError> {
@@ -241,7 +232,7 @@ pub fn count_display_sets(path: &Path) -> Result<SupDisplaySetCounts, PgsError> 
 
         match segment_type {
             SegmentType::PresentationComposition => {
-                // PCS payloads are tiny; read to inspect num_composition_objects at byte 10.
+                // PCS payloads are tiny; read to inspect num_composition_objects at byte 10
                 if payload_size < 11 {
                     return Err(PgsError::InvalidPgs(format!(
                         "PCS payload too small: {payload_size} bytes"
@@ -272,7 +263,7 @@ pub fn count_display_sets(path: &Path) -> Result<SupDisplaySetCounts, PgsError> 
     }
 }
 
-/// Read exactly `buf.len()` bytes; return `Ok(false)` on clean EOF at the start.
+/// Read exactly `buf.len()` bytes. Returns `Ok(false)` on clean EOF at the start.
 fn read_exact_or_eof<R: Read>(reader: &mut R, buf: &mut [u8]) -> std::io::Result<bool> {
     let mut filled = 0;
     while filled < buf.len() {

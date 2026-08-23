@@ -7,7 +7,7 @@ use std::io::{Read, Seek};
 /// Parse the Tags element and extract NUMBER_OF_FRAMES per TrackUID.
 ///
 /// Returns a map from TrackUID to frame count for tracks in `target_uids`.
-/// Skips malformed tags gracefully — missing or unparseable values are ignored.
+/// Skips malformed tags: missing or unparseable values are ignored.
 pub(crate) fn parse_tags_frame_counts<R: Read + Seek>(
     reader: &mut SeekBufReader<R>,
     tags_position: u64,

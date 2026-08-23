@@ -14,7 +14,6 @@ const FIXTURES: &[&str] = &[
     "tests/fixtures/mpeg-transport-stream-descriptors.m2ts",
 ];
 
-/// Returns only the fixture paths that exist on disk.
 fn available_fixtures() -> Vec<&'static str> {
     FIXTURES
         .iter()
@@ -23,7 +22,7 @@ fn available_fixtures() -> Vec<&'static str> {
         .collect()
 }
 
-/// Batch extraction baseline — used to compare against streaming results.
+/// Batch extraction baseline, used to compare against streaming results.
 fn batch_baseline(path: &str) -> Vec<libpgs::TrackDisplaySets> {
     libpgs::extract_all_display_sets(Path::new(path)).expect("batch extraction should succeed")
 }
@@ -90,17 +89,14 @@ fn history_accumulates_correctly() {
     for fixture in fixtures {
         let mut extractor = libpgs::Extractor::open(fixture).expect("open");
 
-        // Consume all display sets.
         let mut total = 0usize;
         while let Some(result) = extractor.next() {
             result.expect("should be Ok");
             total += 1;
 
-            // History length should always match items yielded so far.
             assert_eq!(extractor.history().len(), total);
         }
 
-        // history_for_track should partition correctly.
         let track_ids: Vec<u32> = extractor.tracks().iter().map(|t| t.track_id).collect();
         let mut sum = 0usize;
         for &tid in &track_ids {
@@ -128,7 +124,6 @@ fn with_history_false_skips_catalog_but_yields_same_data() {
             .map(|tds| (tds.track_id, tds.display_set.pts))
             .collect();
 
-        // Opted-out.
         let mut ext = libpgs::Extractor::open(fixture)
             .expect("open")
             .with_history(false);
@@ -164,13 +159,11 @@ fn drain_history_clears_and_returns() {
     for fixture in fixtures {
         let mut extractor = libpgs::Extractor::open(fixture).expect("open");
 
-        // Consume 10 items.
         for _ in 0..10 {
             extractor.next().expect("should have items").expect("Ok");
         }
         assert_eq!(extractor.history().len(), 10);
 
-        // Drain and verify.
         let drained = extractor.drain_history();
         assert_eq!(drained.len(), 10);
         assert!(
@@ -178,7 +171,6 @@ fn drain_history_clears_and_returns() {
             "history should be empty after drain"
         );
 
-        // Continue streaming — new items should accumulate fresh.
         let mut remaining = 0usize;
         for result in extractor.by_ref() {
             result.expect("Ok");
@@ -198,7 +190,6 @@ fn early_termination_with_take() {
     for fixture in fixtures {
         let mut extractor = libpgs::Extractor::open(fixture).expect("open");
 
-        // Take only the first 5 display sets.
         let first_five: Vec<_> = extractor
             .by_ref()
             .take(5)
@@ -206,11 +197,9 @@ fn early_termination_with_take() {
             .expect("Ok");
         assert_eq!(first_five.len(), 5);
 
-        // Stats should show partial read — less than a full extraction.
         let partial_bytes = extractor.stats().bytes_read;
         assert!(partial_bytes > 0, "should have read some bytes");
 
-        // History should have exactly 5.
         assert_eq!(extractor.history().len(), 5);
     }
 }
@@ -224,7 +213,6 @@ fn track_filter_restricts_output() {
 
     for fixture in fixtures {
         let batch = batch_baseline(fixture);
-        // Pick one track.
         let target = &batch[0];
         let tid = target.track.track_id;
 
@@ -266,7 +254,6 @@ fn stats_update_during_streaming() {
 
         let initial_bytes = extractor.stats().bytes_read;
 
-        // Read one item.
         extractor.next().expect("should have items").expect("Ok");
         let after_one = extractor.stats().bytes_read;
         assert!(
@@ -274,7 +261,6 @@ fn stats_update_during_streaming() {
             "bytes_read should increase after yielding a display set"
         );
 
-        // Exhaust remaining.
         for result in extractor.by_ref() {
             result.expect("Ok");
         }
@@ -374,7 +360,7 @@ fn all_fixtures_produce_same_totals() {
     }
 }
 
-/// Roundtrip test: extract MKV → .sup via write_sup_file, then re-read via Extractor.
+/// Roundtrip test: extract MKV -> .sup via write_sup_file, then re-read via Extractor.
 #[test]
 fn sup_roundtrip_from_mkv() {
     let mkv = "tests/fixtures/matroska-with-cues.mkv";
@@ -385,12 +371,10 @@ fn sup_roundtrip_from_mkv() {
     let batch = batch_baseline(mkv);
     assert!(!batch.is_empty(), "should have at least one track");
 
-    // Write first track to a temp .sup file.
     let sup_path = std::env::temp_dir().join("libpgs_test_roundtrip.sup");
     let source = &batch[0];
     libpgs::write_sup_file(&source.display_sets, &sup_path).expect("write_sup_file");
 
-    // Re-read via Extractor.
     let extractor = libpgs::Extractor::open(&sup_path).expect("open .sup");
     assert_eq!(extractor.tracks().len(), 1);
     assert_eq!(extractor.tracks()[0].track_id, 0);
@@ -417,7 +401,6 @@ fn sup_roundtrip_from_mkv() {
     let source_segs: usize = source.display_sets.iter().map(|ds| ds.segments.len()).sum();
     assert_eq!(seg_count, source_segs, "roundtrip segment count mismatch");
 
-    // Verify PTS values match.
     let extractor2 = libpgs::Extractor::open(&sup_path).expect("reopen .sup");
     for (i, (result, orig_ds)) in extractor2.zip(source.display_sets.iter()).enumerate() {
         let tds = result.expect("Ok");

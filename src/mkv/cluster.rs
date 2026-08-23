@@ -114,7 +114,6 @@ fn scan_cluster_inner<R: Read + Seek>(
     Ok(pgs_blocks)
 }
 
-/// Skip or drain bytes depending on sequential mode.
 #[inline]
 fn skip_or_drain<R: Read + Seek>(
     reader: &mut SeekBufReader<R>,
@@ -129,8 +128,6 @@ fn skip_or_drain<R: Read + Seek>(
     Ok(())
 }
 
-/// Check a SimpleBlock: read its track number, and if it matches any PGS track, read the payload.
-/// Otherwise, skip (or drain) the remaining payload.
 fn extract_pgs_from_block<R: Read + Seek>(
     reader: &mut SeekBufReader<R>,
     block_size: u64,
@@ -145,13 +142,11 @@ fn extract_pgs_from_block<R: Read + Seek>(
     let header = block::read_block_header(reader)?;
 
     if !pgs_track_numbers.contains(&header.track_number) {
-        // Not a PGS track — skip/drain the remaining payload.
         let remaining = block_end - reader.position();
         skip_or_drain(reader, remaining, sequential)?;
         return Ok(());
     }
 
-    // This is a PGS block! Read the payload.
     let payload_size = (block_end - reader.position()) as usize;
     let data = reader.read_bytes(payload_size)?;
 
@@ -164,7 +159,6 @@ fn extract_pgs_from_block<R: Read + Seek>(
     Ok(())
 }
 
-/// Parse a BlockGroup, look for the Block child, and extract PGS data if it matches any track.
 fn extract_pgs_from_block_group<R: Read + Seek>(
     reader: &mut SeekBufReader<R>,
     data_start: u64,
@@ -208,7 +202,7 @@ fn extract_pgs_from_block_group<R: Read + Seek>(
 /// `block_position` is the absolute byte position of the SimpleBlock or BlockGroup element.
 /// `cue_time` is the absolute timestamp from the CuePoint. Per the Matroska spec, when
 /// `CueRelativePosition` points at a specific block, `CueTime` is that block's absolute
-/// presentation timestamp — so we use it directly, without adding the block's
+/// presentation timestamp, so we use it directly, without adding the block's
 /// cluster-relative timestamp on top.
 /// Returns the PGS block if the block belongs to one of the target tracks, or None.
 pub fn read_block_at_position<R: Read + Seek>(
@@ -248,7 +242,6 @@ pub fn read_block_at_position<R: Read + Seek>(
             }))
         }
         ids::BLOCK_GROUP => {
-            // Enter BlockGroup, find the Block child.
             let bg_end = reader.position() + elem_size.value;
             while reader.position() < bg_end {
                 let child_id = match read_element_id(reader) {
@@ -292,11 +285,8 @@ mod tests {
     use super::*;
     use std::io::Cursor;
 
-    // --- Binary builder helpers ---
-
     /// Write an EBML element: ID (1-4 bytes depending on value) + VINT size + data.
     fn write_ebml_element(buf: &mut Vec<u8>, id: u32, data: &[u8]) {
-        // Write element ID.
         if id <= 0xFF {
             buf.push(id as u8);
         } else if id <= 0xFFFF {
@@ -312,7 +302,6 @@ mod tests {
             buf.push((id >> 8) as u8);
             buf.push(id as u8);
         }
-        // Write VINT size (1-byte for sizes < 127, 2-byte otherwise).
         if data.len() < 127 {
             buf.push(0x80 | data.len() as u8);
         } else {
@@ -369,30 +358,24 @@ mod tests {
     fn build_multi_track_cluster() -> Vec<u8> {
         let mut data = Vec::new();
 
-        // Timestamp element: value = 1000 (2 bytes big-endian)
         write_ebml_element(&mut data, ids::TIMESTAMP as u32, &1000u16.to_be_bytes());
 
-        // Track 3: PGS PCS segment
         let pcs_3 = build_pgs_pcs(90000);
         let block_3_pcs = build_simple_block_body(3, 0, &pcs_3);
         write_ebml_element(&mut data, ids::SIMPLE_BLOCK as u32, &block_3_pcs);
 
-        // Track 1: non-PGS data (video)
         let video = vec![0xAA; 50];
         let block_1 = build_simple_block_body(1, 0, &video);
         write_ebml_element(&mut data, ids::SIMPLE_BLOCK as u32, &block_1);
 
-        // Track 5: PGS PCS segment
         let pcs_5 = build_pgs_pcs(90000);
         let block_5_pcs = build_simple_block_body(5, 0, &pcs_5);
         write_ebml_element(&mut data, ids::SIMPLE_BLOCK as u32, &block_5_pcs);
 
-        // Track 3: PGS END segment
         let end_3 = build_pgs_end(90000);
         let block_3_end = build_simple_block_body(3, 10, &end_3);
         write_ebml_element(&mut data, ids::SIMPLE_BLOCK as u32, &block_3_end);
 
-        // Track 5: PGS END segment
         let end_5 = build_pgs_end(90000);
         let block_5_end = build_simple_block_body(5, 10, &end_5);
         write_ebml_element(&mut data, ids::SIMPLE_BLOCK as u32, &block_5_end);
@@ -406,7 +389,6 @@ mod tests {
         let data_len = data.len() as u64;
         let mut reader = SeekBufReader::new(Cursor::new(data));
 
-        // Scan for tracks 3 and 5 — should get 4 blocks, skipping track 1.
         let blocks = scan_cluster_for_pgs(&mut reader, 0, data_len, &[3, 5]).unwrap();
 
         assert_eq!(blocks.len(), 4, "expected 4 PGS blocks (2 per track)");
@@ -428,7 +410,6 @@ mod tests {
         let data_len = data.len() as u64;
         let mut reader = SeekBufReader::new(Cursor::new(data));
 
-        // Scan for only track 5 — should get 2 blocks.
         let blocks = scan_cluster_for_pgs(&mut reader, 0, data_len, &[5]).unwrap();
 
         assert_eq!(blocks.len(), 2);
@@ -442,7 +423,6 @@ mod tests {
         let data_len = data.len() as u64;
         let mut reader = SeekBufReader::new(Cursor::new(data));
 
-        // Scan for track 99 — should get 0 blocks.
         let blocks = scan_cluster_for_pgs(&mut reader, 0, data_len, &[99]).unwrap();
         assert!(blocks.is_empty());
     }

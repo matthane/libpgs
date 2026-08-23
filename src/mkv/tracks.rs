@@ -29,9 +29,9 @@ pub struct MkvPgsTrack {
     pub language: Option<String>,
     /// Track name / title, if present.
     pub name: Option<String>,
-    /// FlagDefault — whether this track should be active by default.
+    /// FlagDefault, whether this track should be active by default.
     pub flag_default: Option<bool>,
-    /// FlagForced — whether this track contains forced subtitles.
+    /// FlagForced, whether this track contains forced subtitles.
     pub flag_forced: Option<bool>,
     /// Content compression, if the track uses ContentEncodings.
     pub compression: Option<ContentCompAlgo>,
@@ -128,7 +128,6 @@ fn parse_track_entry<R: Read + Seek>(
         }
     }
 
-    // Check if this is a PGS subtitle track.
     let is_pgs =
         track_type == Some(TRACK_TYPE_SUBTITLE) && codec_id.as_deref() == Some(PGS_CODEC_ID);
 
@@ -136,12 +135,10 @@ fn parse_track_entry<R: Read + Seek>(
         let track_number = track_number
             .ok_or_else(|| PgsError::InvalidMkv("PGS track missing TrackNumber".into()))?;
 
-        // Normalize "und" (undefined) language to None.
         if language.as_deref() == Some("und") {
             language = None;
         }
 
-        // Normalize language codes to BCP 47 (ISO 639-1 where available).
         language = language.map(|l| crate::lang::normalize_language(&l));
 
         Ok(Some(MkvPgsTrack {
@@ -158,7 +155,6 @@ fn parse_track_entry<R: Read + Seek>(
     }
 }
 
-/// Parse ContentEncodings → ContentEncoding → ContentCompression.
 fn parse_content_encodings<R: Read + Seek>(
     reader: &mut SeekBufReader<R>,
     data_start: u64,
@@ -234,6 +230,6 @@ fn parse_content_compression<R: Read + Seek>(
     match algo {
         0 => Ok(Some(ContentCompAlgo::Zlib)),
         3 => Ok(Some(ContentCompAlgo::HeaderStripping(settings))),
-        _ => Ok(None), // Unsupported algo (bzlib, lzo) — treat as uncompressed.
+        _ => Ok(None), // unsupported algo (bzlib, lzo), treat as uncompressed
     }
 }

@@ -88,7 +88,7 @@ pub fn encode_rle(pixels: &[u8], width: u16, height: u16) -> Option<Vec<u8>> {
 /// `width` and `height` define the expected image dimensions.
 ///
 /// Returns a `Vec<u8>` of length `width * height`, where each byte is a palette
-/// entry index (0–255). Pixels are stored in row-major order.
+/// entry index (0-255). Pixels are stored in row-major order.
 ///
 /// Returns `None` if the RLE data is malformed or the decoded pixel count
 /// does not match `width * height`.
@@ -125,7 +125,7 @@ pub fn decode_rle(rle_data: &[u8], width: u16, height: u16) -> Option<Vec<u8>> {
             i += 1;
 
             if flag == 0x00 {
-                // End of line — pad remaining columns with color 0.
+                // End of line, pad remaining columns with color 0.
                 let remaining_row = w.saturating_sub(col);
                 let room = total - pixels.len();
                 let run = remaining_row.min(room);
@@ -135,11 +135,11 @@ pub fn decode_rle(rle_data: &[u8], width: u16, height: u16) -> Option<Vec<u8>> {
                 let top2 = flag & 0xC0;
                 let (run, color) = match top2 {
                     0x00 => {
-                        // 00 00LLLLLL: L pixels of color 0 (L: 1–63)
+                        // 00 00LLLLLL: L pixels of color 0 (L: 1-63)
                         ((flag & 0x3F) as usize, 0u8)
                     }
                     0x40 => {
-                        // 00 01LLLLLL LLLLLLLL: L pixels of color 0 (L: 64–16383)
+                        // 00 01LLLLLL LLLLLLLL: L pixels of color 0 (L: 64-16383)
                         if i >= len {
                             return None;
                         }
@@ -148,7 +148,7 @@ pub fn decode_rle(rle_data: &[u8], width: u16, height: u16) -> Option<Vec<u8>> {
                         (run, 0u8)
                     }
                     0x80 => {
-                        // 00 10LLLLLL CCCCCCCC: L pixels of color C (L: 3–63)
+                        // 00 10LLLLLL CCCCCCCC: L pixels of color C (L: 3-63)
                         if i >= len {
                             return None;
                         }
@@ -158,7 +158,7 @@ pub fn decode_rle(rle_data: &[u8], width: u16, height: u16) -> Option<Vec<u8>> {
                         (run, color)
                     }
                     0xC0 => {
-                        // 00 11LLLLLL LLLLLLLL CCCCCCCC: L pixels of color C (L: 64–16383)
+                        // 00 11LLLLLL LLLLLLLL CCCCCCCC: L pixels of color C (L: 64-16383)
                         if i + 1 >= len {
                             return None;
                         }
@@ -255,7 +255,7 @@ mod tests {
         // Row 2: 4 explicit pixels.
         let data = [
             0x01, 0x02, // Row 1: pixel 1, pixel 2
-            0x00, 0x00, // EOL — pads to width 4
+            0x00, 0x00, // EOL, pads to width 4
             0x03, 0x04, 0x05, 0x06, // Row 2: 4 pixels
         ];
         let result = decode_rle(&data, 4, 2).unwrap();
@@ -301,7 +301,7 @@ mod tests {
 
     #[test]
     fn rle_data_pads_short_output() {
-        // RLE data produces fewer pixels than width*height — remainder padded with 0.
+        // RLE data produces fewer pixels than width*height, remainder padded with 0.
         let data = [0x01]; // 1 pixel of color 1.
         let result = decode_rle(&data, 3, 1).unwrap();
         assert_eq!(result, vec![1, 0, 0]);
@@ -424,7 +424,7 @@ mod tests {
 
     #[test]
     fn encode_long_zero_run_64() {
-        // Exactly 64 zeros — should use the long (3-byte) encoding.
+        // Exactly 64 zeros, should use the long (3-byte) encoding.
         let pixels = vec![0; 64];
         let rle = encode_rle(&pixels, 64, 1).unwrap();
         let decoded = decode_rle(&rle, 64, 1).unwrap();
